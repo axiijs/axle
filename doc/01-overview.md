@@ -32,6 +32,7 @@ patch 信息的增量列表，`autorun` / `ReactiveEffect` 提供依赖追踪。
   详细设计见 [02-phase-1-design.md](./02-phase-1-design.md)。
 - **Phase 2 — 编辑器基础设施**：`leafer-editor` 集成（选中 / 变换）、响应式的视口 /
   相机状态包装、`stateFromRef` 式的「场景图状态 → 响应式数据」反向绑定。
+  节点画布 POC 沉淀的设计输入见 [03-phase-2-input-canvas-poc.md](./03-phase-2-input-canvas-poc.md)。
 - **Phase 3 — 组件生态**：Component AOP（`$item:prop` 穿透配置）、常用画布组件
   （标尺 / 网格 / 参考线）、主题系统。
 
