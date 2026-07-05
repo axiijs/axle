@@ -26,7 +26,8 @@ export type EffectHandle = () => unknown
 
 export type RefObject<T = unknown> = { current: T | null }
 export type RefFn<T = unknown> = (value: T | null) => void
-export type RefProp<T = unknown> = RefObject<T> | RefFn<T>
+/** ref 支持数组组合（如同时挂业务 ref 和 RxLeaferState 的 ref），与 axii 对齐 */
+export type RefProp<T = unknown> = RefObject<T> | RefFn<T> | (RefObject<T> | RefFn<T>)[]
 
 /**
  * 组件渲染上下文。组件函数只执行一次，这里提供生命周期与 ref 相关的注入能力。

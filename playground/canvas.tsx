@@ -5,26 +5,22 @@
  * 1. 卡片组件化：Card / MediaImage / MediaVideo / Port 都是普通组件函数，只执行一次；
  * 2. 连线交互：点击 port 派生一条跟随鼠标的虚线，点到另一张卡片的 port 上完成连线
  *    （也支持从 port 直接拖拽到目标 port）；
- * 3. 卡片拖动：leafer 原生 draggable + 位置回写 atom，连线通过细粒度绑定自动跟随；
+ * 3. 卡片拖动：leafer 原生 draggable 由引擎移动，位置经 RxUIPosition 反向同步成
+ *    响应式数据，连线通过细粒度绑定自动跟随（无需 onDrag 手动回写样板）；
  * 4. 画布缩放/平移：走 leafer viewport（zoomLayer 整层变换），滚轮缩放、空白处
- *    拖拽/双指平移都在引擎层完成，不经过响应式系统，性能与卡片数量无关。
+ *    拖拽/双指平移都在引擎层完成，不经过响应式系统，性能与卡片数量无关；
+ *    视口状态经 RxViewport 反向同步（缩放指示器）。
  *
  * 性能要点：
- * - 拖动一张卡片只更新它自己的 x/y 两个 atom，只有绑定了这两个 atom 的
- *   BindingEffect（卡片 group 的 x/y + 相关连线的 path）会重算，其余卡片零开销；
+ * - 拖动一张卡片只更新它自己的 RxUIPosition value atom，只有绑定了该 atom 的
+ *   BindingEffect（相关连线的 path）会重算，其余卡片零开销；
  * - 缩放/平移由 leafer zoomLayer 单矩阵完成，画布内容不发生任何响应式更新；
  * - 视频卡片用 rAF 只重绘自己的 Canvas 元素，leafer 按脏区域局部重绘。
  */
-import { Leafer, DragEvent, LayoutEvent } from 'leafer-editor'
-import type {
-  ICanvas,
-  IUI,
-  PointerEvent as LeaferPointerEvent,
-  DragEvent as LeaferDragEvent,
-} from 'leafer-ui'
-import { atom, RxList } from 'data0'
-import type { Atom } from 'data0'
-import { createRoot } from '@axiijs/axle'
+import { Leafer, DragEvent } from 'leafer-editor'
+import type { ICanvas, IUI, PointerEvent as LeaferPointerEvent } from 'leafer-ui'
+import { atom, autorun, RxList } from 'data0'
+import { createRoot, RxUIHovered, RxUIPosition, RxViewport } from '@axiijs/axle'
 import type { RenderContext } from '@axiijs/axle'
 
 // ---------------------------------------------------------------------------
@@ -47,9 +43,14 @@ type CardModel = {
   title: string
   desc: string
   accent: string
-  /** 卡片在页面（world/page）坐标系中的位置，拖动时回写 */
-  x: Atom<number>
-  y: Atom<number>
+  /**
+   * 卡片位置（页面坐标）。引擎（draggable 拖动）是唯一事实源，
+   * RxUIPosition 把它反向同步进响应式世界，连线等下游从这里读。
+   */
+  position: RxUIPosition
+  /** 初始位置：只在挂载时用一次，之后以引擎状态为准 */
+  initX: number
+  initY: number
   imageUrl?: string
 }
 
@@ -65,7 +66,13 @@ let nextEdgeId = 1
 /** 卡片不支持删除（POC 范围外），用普通 Map 做 id 索引即可 */
 const cardIndex = new Map<number, CardModel>()
 
-function makeCard(kind: CardModel['kind'], title: string, desc: string, x: number, y: number): CardModel {
+function makeCard(
+  kind: CardModel['kind'],
+  title: string,
+  desc: string,
+  x: number,
+  y: number,
+): CardModel {
   const id = nextCardId++
   const accent = ACCENTS[id % ACCENTS.length]!
   const card: CardModel = {
@@ -74,8 +81,11 @@ function makeCard(kind: CardModel['kind'], title: string, desc: string, x: numbe
     title,
     desc,
     accent,
-    x: atom(x),
-    y: atom(y),
+    // CAUTION 在组件 render 之外创建，不进 collect frame；卡片模型与画布同生命周期，
+    //  且 ref 摘除（卡片销毁）时会自动 unlisten，这里无需手动管理。
+    position: new RxUIPosition(atom({ x, y })),
+    initX: x,
+    initY: y,
     ...(kind === 'image' ? { imageUrl: makeThumb(id, accent) } : {}),
   }
   cardIndex.set(id, card)
@@ -125,7 +135,8 @@ const OPPOSITE: Record<Side, Side> = { left: 'right', right: 'left', top: 'botto
 
 function portPos(card: CardModel, side: Side): { x: number; y: number } {
   const local = PORT_LOCAL[side]
-  return { x: card.x() + local.x, y: card.y() + local.y }
+  const pos = card.position.value() ?? { x: card.initX, y: card.initY }
+  return { x: pos.x + local.x, y: pos.y + local.y }
 }
 
 /** 从两个端点 + 各自出线方向生成三次贝塞尔 path 字符串 */
@@ -203,7 +214,7 @@ function makeThumb(seed: number, accent: string): string {
   el.height = h
   const ctx = el.getContext('2d')!
   let s = seed * 9301 + 49297
-  const rand = () => ((s = (s * 233280 + 49297) % 233280) / 233280)
+  const rand = () => (s = (s * 233280 + 49297) % 233280) / 233280
 
   const g = ctx.createLinearGradient(0, 0, w, h)
   g.addColorStop(0, accent)
@@ -272,10 +283,7 @@ function MediaBadge({ label }: { label: string }) {
  * 优先绘制真实 <video>（静音循环播放），加载失败/离线时退化为程序化动画，
  * 保证 demo 在任何环境下都有动态内容。
  */
-function MediaVideo(
-  { accent }: { accent: string },
-  { createRef, useLayoutEffect }: RenderContext,
-) {
+function MediaVideo({ accent }: { accent: string }, { createRef, useLayoutEffect }: RenderContext) {
   const surface = createRef<ICanvas>()
 
   useLayoutEffect(() => {
@@ -360,7 +368,9 @@ function MediaVideo(
 
 /** 连接点：hover 放大高亮；点击/拖拽派生连线；再点目标 port 完成 */
 function Port({ card, side }: { card: CardModel; side: Side }) {
-  const hover = atom(false)
+  // RxUIHovered：pointer.enter/leave → atom，组件销毁时被 collect frame 自动清理
+  const hovered = new RxUIHovered()
+  const hover = () => hovered.value() === true
   const local = PORT_LOCAL[side]
 
   const isPendingSource = () => {
@@ -374,6 +384,7 @@ function Port({ card, side }: { card: CardModel; side: Side }) {
 
   return (
     <ellipse
+      ref={hovered.ref}
       x={local.x}
       y={local.y}
       around="center"
@@ -385,8 +396,6 @@ function Port({ card, side }: { card: CardModel; side: Side }) {
       stroke="#0f1115"
       strokeWidth={2}
       cursor="crosshair"
-      onPointerEnter={() => hover(true)}
-      onPointerLeave={() => hover(false)}
       onTap={() => handlePortTap({ cardId: card.id, side })}
       onDragStart={() => {
         // 按住 port 拖拽时不移动卡片：把本次手势的拖拽列表清空
@@ -407,18 +416,7 @@ function Port({ card, side }: { card: CardModel; side: Side }) {
 /** 卡片组件：媒体（图或视频）+ 标题 + 描述 + 四个 port */
 function Card({ card }: { card: CardModel }) {
   return (
-    <group
-      x={card.x}
-      y={card.y}
-      draggable={true}
-      cursor="grab"
-      onDrag={(e: LeaferDragEvent) => {
-        // leafer 引擎已经移动了 group，这里把位置回写 atom，连线随之更新
-        const target = e.current as IUI
-        card.x(target.x!)
-        card.y(target.y!)
-      }}
-    >
+    <group ref={card.position.ref} x={card.initX} y={card.initY} draggable={true} cursor="grab">
       <rect
         width={CARD_W}
         height={CARD_H}
@@ -444,7 +442,14 @@ function Card({ card }: { card: CardModel }) {
         )}
         <MediaBadge label={card.kind === 'image' ? 'IMAGE' : 'VIDEO'} />
       </box>
-      <rect x={16} y={MEDIA_Y + MEDIA_H + 14} width={4} height={14} cornerRadius={2} fill={card.accent} />
+      <rect
+        x={16}
+        y={MEDIA_Y + MEDIA_H + 14}
+        width={4}
+        height={14}
+        cornerRadius={2}
+        fill={card.accent}
+      />
       <text x={28} y={MEDIA_Y + MEDIA_H + 12} fontSize={15} fontWeight="bold" fill="#e6e6e6">
         {card.title}
       </text>
@@ -472,7 +477,12 @@ function EdgeView({ edge }: { edge: EdgeModel }) {
   return (
     <path
       path={() =>
-        wirePath(portPos(from, edge.from.side), edge.from.side, portPos(to, edge.to.side), edge.to.side)
+        wirePath(
+          portPos(from, edge.from.side),
+          edge.from.side,
+          portPos(to, edge.to.side),
+          edge.to.side,
+        )
       }
       stroke={() => (selectedEdgeId() === edge.id ? '#feca57' : '#5b78c7')}
       strokeWidth={() => (selectedEdgeId() === edge.id ? 4 : 2.5)}
@@ -526,8 +536,16 @@ function App() {
         hittable={false}
       />
       {/* 连线层在卡片层下方 */}
-      <group>{edges.map((edge) => <EdgeView edge={edge} />)}</group>
-      <group>{cards.map((card) => <Card card={card} />)}</group>
+      <group>
+        {edges.map((edge) => (
+          <EdgeView edge={edge} />
+        ))}
+      </group>
+      <group>
+        {cards.map((card) => (
+          <Card card={card} />
+        ))}
+      </group>
       <PendingWire />
     </group>
   )
@@ -601,21 +619,29 @@ function viewportCenter(): { x: number; y: number } {
 
 on('add-image', () => {
   const { x, y } = viewportCenter()
-  cards.push(makeCard('image', `图文卡片 ${nextCardId}`, '新添加的图文卡片，拖动它试试连线跟随。', x, y))
+  cards.push(
+    makeCard('image', `图文卡片 ${nextCardId}`, '新添加的图文卡片，拖动它试试连线跟随。', x, y),
+  )
 })
 
 on('add-video', () => {
   const { x, y } = viewportCenter()
-  cards.push(makeCard('video', `视频卡片 ${nextCardId}`, '新添加的视频卡片，帧画面实时绘制。', x, y))
+  cards.push(
+    makeCard('video', `视频卡片 ${nextCardId}`, '新添加的视频卡片，帧画面实时绘制。', x, y),
+  )
 })
+
+function cardPos(card: CardModel): { x: number; y: number } {
+  return card.position.value() ?? { x: card.initX, y: card.initY }
+}
 
 on('zoom-in', () => leafer.zoom('in'))
 on('zoom-out', () => leafer.zoom('out'))
 // 'fit' 会包含网格背景，这里手动用卡片包围盒适配
 on('zoom-fit', () => {
   if (!cards.data.length) return
-  const xs = cards.data.map((c) => c.x())
-  const ys = cards.data.map((c) => c.y())
+  const xs = cards.data.map((c) => cardPos(c).x)
+  const ys = cards.data.map((c) => cardPos(c).y)
   const minX = Math.min(...xs)
   const minY = Math.min(...ys)
   leafer.zoom(
@@ -630,11 +656,12 @@ on('zoom-fit', () => {
 })
 on('zoom-reset', () => leafer.zoom(1))
 
-// 缩放指示器：布局完成后读 zoomLayer 的 scale
+// 缩放指示器：RxViewport 把 zoomLayer 状态反向同步成 atom，autorun 消费
+const rxViewport = new RxViewport()
+rxViewport.ref(leafer)
 const zoomLabel = document.getElementById('zoom-level')!
-leafer.on(LayoutEvent.AFTER, () => {
-  const text = `${Math.round((leafer.zoomLayer?.scaleX ?? 1) * 100)}%`
-  if (zoomLabel.textContent !== text) zoomLabel.textContent = text
+autorun(() => {
+  zoomLabel.textContent = `${Math.round((rxViewport.value()?.scale ?? 1) * 100)}%`
 })
 
 // ---------------------------------------------------------------------------
@@ -643,14 +670,11 @@ leafer.on(LayoutEvent.AFTER, () => {
 
 Object.assign(globalThis as Record<string, unknown>, {
   __canvasDebug: () => ({
-    cards: cards.data.map((c) => ({ id: c.id, kind: c.kind, x: c.x(), y: c.y() })),
+    cards: cards.data.map((c) => ({ id: c.id, kind: c.kind, ...cardPos(c) })),
     edges: edges.data.map((e) => ({ id: e.id, from: e.from, to: e.to })),
     pending: pendingFrom(),
-    viewport: {
-      x: leafer.zoomLayer?.x,
-      y: leafer.zoomLayer?.y,
-      scale: leafer.zoomLayer?.scaleX,
-    },
+    // RxViewport 反向同步的视口状态（引擎 → atom）
+    viewport: rxViewport.value(),
   }),
   __canvasStartPending: () => startPending({ cardId: cards.data[0]!.id, side: 'right' }),
 })

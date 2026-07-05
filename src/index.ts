@@ -23,3 +23,6 @@ export type { Host, PathContext } from './Host.js'
 export { EVENT_PROP_TO_TYPE, createPlaceholder, isPlaceholder } from './leafer.js'
 
 export { BindingEffect, DeferredBindingEffect } from './BindingEffect.js'
+
+export { RxLeaferState, RxViewport, RxUIPosition, RxUIHovered } from './reactiveLeaferState.js'
+export type { ViewportState } from './reactiveLeaferState.js'
