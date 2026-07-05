@@ -31,8 +31,9 @@ patch 信息的增量列表，`autorun` / `ReactiveEffect` 提供依赖追踪。
   `RxList` 增量列表渲染、函数组件（执行一次）与生命周期、`createRoot`。
   详细设计见 [02-phase-1-design.md](./02-phase-1-design.md)。
 - **Phase 2 — 编辑器基础设施**：`leafer-editor` 集成（选中 / 变换）、响应式的视口 /
-  相机状态包装、`stateFromRef` 式的「场景图状态 → 响应式数据」反向绑定
-  （反向绑定已落地，见 [04-reactive-leafer-state.md](./04-reactive-leafer-state.md)）。
+  相机状态包装、`stateFromRef` 式的「场景图状态 → 响应式数据」反向绑定。
+  节点画布 POC 沉淀的设计输入见 [03-phase-2-input-canvas-poc.md](./03-phase-2-input-canvas-poc.md)；
+  反向绑定已落地，见 [04-reactive-leafer-state.md](./04-reactive-leafer-state.md)。
 - **Phase 3 — 组件生态**：Component AOP（`$item:prop` 穿透配置）、常用画布组件
   （标尺 / 网格 / 参考线）、主题系统。
 
