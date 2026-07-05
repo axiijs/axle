@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Axle Playground</title>
+    <title>Axle Canvas Playground</title>
     <style>
       * {
         box-sizing: border-box;
@@ -22,10 +22,10 @@
         height: 100vh;
       }
       header {
-        padding: 12px 20px;
+        padding: 10px 20px;
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
         border-bottom: 1px solid #23262d;
         flex-wrap: wrap;
       }
@@ -35,6 +35,14 @@
         font-weight: 600;
       }
       header h1 span {
+        color: #7aa2ff;
+      }
+      header a {
+        color: #8a919e;
+        font-size: 12px;
+        text-decoration: none;
+      }
+      header a:hover {
         color: #7aa2ff;
       }
       button {
@@ -50,6 +58,18 @@
         background: #262b34;
         border-color: #3a4150;
       }
+      .sep {
+        width: 1px;
+        height: 20px;
+        background: #2c313a;
+      }
+      #zoom-level {
+        min-width: 48px;
+        text-align: center;
+        font-size: 13px;
+        color: #8a919e;
+        font-variant-numeric: tabular-nums;
+      }
       #canvas {
         flex: 1;
         min-height: 0;
@@ -63,18 +83,22 @@
   </head>
   <body>
     <header>
-      <h1><span>Axle</span> Playground</h1>
-      <button id="add">添加一项</button>
-      <button id="remove">删除选中</button>
-      <button id="shuffle">打乱</button>
-      <button id="sort">排序</button>
-      <button id="toggle-hint">显示/隐藏提示</button>
+      <h1><span>Axle</span> Canvas</h1>
+      <button id="add-image">+ 图文卡片</button>
+      <button id="add-video">+ 视频卡片</button>
+      <div class="sep"></div>
+      <button id="zoom-out">−</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in">＋</button>
+      <button id="zoom-fit">适应内容</button>
+      <button id="zoom-reset">100%</button>
       <span class="hint">
-        点击列表项选中 · 拖动右侧方块 · 所有更新都是响应式增量更新 ·
-        <a href="./canvas.html" style="color: #7aa2ff">节点画布 demo →</a>
+        点击 port 派生连线，再点另一张卡片的 port 完成 · 拖动卡片 · 空白处拖动/滚轮平移 ·
+        Ctrl/⌘+滚轮或捏合缩放 · 点击连线选中后 Delete 删除 · Esc 取消连线 ·
+        <a href="./index.html">← 基础 demo</a>
       </span>
     </header>
     <div id="canvas"></div>
-    <script type="module" src="./main.tsx"></script>
+    <script type="module" src="./canvas.tsx"></script>
   </body>
 </html>
