@@ -15,7 +15,12 @@
     "sourceMap": true,
     "jsx": "react-jsx",
     "jsxImportSource": "@axiijs/axle",
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@axiijs/axle": ["./src/index.ts"],
+      "@axiijs/axle/jsx-runtime": ["./src/jsx-runtime.ts"],
+      "@axiijs/axle/jsx-dev-runtime": ["./src/jsx-dev-runtime.ts"]
+    }
   },
-  "include": ["src", "test", "eslint.config.js", "tsup.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "playground", "eslint.config.js", "tsup.config.ts", "vitest.config.ts"]
 }
