@@ -50,7 +50,9 @@ function isTextChildItem(v: unknown): boolean {
 
 export function attachRef(ref: RefProp | undefined, value: unknown): void {
   if (!ref) return
-  if (typeof ref === 'function') {
+  if (Array.isArray(ref)) {
+    for (const item of ref) attachRef(item, value)
+  } else if (typeof ref === 'function') {
     ref(value)
   } else {
     ref.current = value
@@ -59,7 +61,9 @@ export function attachRef(ref: RefProp | undefined, value: unknown): void {
 
 export function detachRef(ref: RefProp | undefined): void {
   if (!ref) return
-  if (typeof ref === 'function') {
+  if (Array.isArray(ref)) {
+    for (const item of ref) detachRef(item)
+  } else if (typeof ref === 'function') {
     ref(null)
   } else {
     ref.current = null

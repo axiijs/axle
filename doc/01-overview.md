@@ -31,7 +31,8 @@ patch 信息的增量列表，`autorun` / `ReactiveEffect` 提供依赖追踪。
   `RxList` 增量列表渲染、函数组件（执行一次）与生命周期、`createRoot`。
   详细设计见 [02-phase-1-design.md](./02-phase-1-design.md)。
 - **Phase 2 — 编辑器基础设施**：`leafer-editor` 集成（选中 / 变换）、响应式的视口 /
-  相机状态包装、`stateFromRef` 式的「场景图状态 → 响应式数据」反向绑定。
+  相机状态包装、`stateFromRef` 式的「场景图状态 → 响应式数据」反向绑定
+  （反向绑定已落地，见 [04-reactive-leafer-state.md](./04-reactive-leafer-state.md)）。
 - **Phase 3 — 组件生态**：Component AOP（`$item:prop` 穿透配置）、常用画布组件
   （标尺 / 网格 / 参考线）、主题系统。
 
@@ -52,6 +53,7 @@ src/
   render.ts          createRoot
   leafer.ts          Leafer 桥接（创建节点/占位符/插入/事件名映射）
   BindingEffect.ts   轻量绑定 effect（移植自 axii）
+  reactiveLeaferState.ts 「引擎状态 → 响应式数据」反向同步（移植自 axii 的 RxDOMState 范式）
   util.ts            assert 等
 doc/                 设计文档
 test/                vitest 测试（jsdom + canvas mock）
