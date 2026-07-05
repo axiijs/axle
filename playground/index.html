@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Axle Playground</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #0f1115;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: 12px 20px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border-bottom: 1px solid #23262d;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 16px;
+        margin: 0 12px 0 0;
+        font-weight: 600;
+      }
+      header h1 span {
+        color: #7aa2ff;
+      }
+      button {
+        background: #1c2027;
+        color: #e6e6e6;
+        border: 1px solid #2c313a;
+        border-radius: 6px;
+        padding: 6px 14px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #262b34;
+        border-color: #3a4150;
+      }
+      #canvas {
+        flex: 1;
+        min-height: 0;
+      }
+      .hint {
+        font-size: 12px;
+        color: #8a919e;
+        margin-left: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Axle</span> Playground</h1>
+      <button id="add">添加一项</button>
+      <button id="remove">删除选中</button>
+      <button id="shuffle">打乱</button>
+      <button id="sort">排序</button>
+      <button id="toggle-hint">显示/隐藏提示</button>
+      <span class="hint">点击列表项选中 · 拖动右侧方块 · 所有更新都是响应式增量更新</span>
+    </header>
+    <div id="canvas"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

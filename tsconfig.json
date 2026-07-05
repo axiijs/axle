@@ -22,5 +22,5 @@
       "@axiijs/axle/jsx-dev-runtime": ["./src/jsx-dev-runtime.ts"]
     }
   },
-  "include": ["src", "test", "eslint.config.js", "tsup.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "playground", "eslint.config.js", "tsup.config.ts", "vitest.config.ts"]
 }

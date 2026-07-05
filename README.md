@@ -56,6 +56,17 @@ TypeScript 配置（自动 JSX runtime）：
 - [doc/01-overview.md](./doc/01-overview.md) — 总览与阶段规划
 - [doc/02-phase-1-design.md](./doc/02-phase-1-design.md) — Phase 1（运行时地基）设计
 
+## Playground
+
+仓库自带一个可交互的示例应用（响应式列表、选中高亮、拖拽、条件渲染、增量 reorder）：
+
+```bash
+npm install
+npm run playground   # 启动 vite，浏览器打开 playground
+```
+
+示例代码在 [`playground/main.tsx`](./playground/main.tsx)，直接引用 `src/`，改运行时代码即时生效。
+
 ## 开发
 
 ```bash
