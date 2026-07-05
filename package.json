@@ -1,0 +1,65 @@
+{
+  "name": "@axiijs/axle",
+  "version": "0.0.0",
+  "description": "Reactive JSX runtime foundation for data-driven LeaferJS canvas editors.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./jsx-runtime": {
+      "types": "./dist/jsx-runtime.d.ts",
+      "import": "./dist/jsx-runtime.js"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./dist/jsx-dev-runtime.d.ts",
+      "import": "./dist/jsx-dev-runtime.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "data0": "^2.0.0",
+    "leafer-editor": "^2.1.10",
+    "leafer-ui": "^2.1.10"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "data0": "^2.0.0",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "jsdom": "^29.1.1",
+    "leafer-editor": "^2.1.10",
+    "leafer-ui": "^2.1.10",
+    "prettier": "^3.7.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.49.0",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}
