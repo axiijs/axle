@@ -49,10 +49,13 @@ export type RxWindowedListOptions<T, Id, L extends string> = {
   mounted?: (() => boolean) | undefined
   /** `mounted()` 为 false 期间新 pin 行的档位（如 dot 档下以 'simple' 保活）。缺省取 `lod()` */
   pinnedLodWhenUnmounted?: L | undefined
-  /** 视口外扩比例（进入阈值），默认 0.75 */
-  buffer?: number | undefined
+  /**
+   * 视口外扩比例（进入阈值），默认 0.75。可给 getter 按档位动态调整
+   * （低档位视口内条目数大，缓冲区应收窄以压住场景图节点数）
+   */
+  buffer?: number | (() => number) | undefined
   /** 滞后带：移出 buffer + hysteresis 才卸载，默认 0.25 */
-  hysteresis?: number | undefined
+  hysteresis?: number | (() => number) | undefined
   /** 强制保活的 id 集合（响应式 getter，重算触发源 4） */
   pins?: (() => Iterable<Id>) | undefined
   /** 视口手势进行中（true 期间冻结新挂载，只处理卸载与 pin 挂载） */
@@ -102,8 +105,8 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private unsubscribeIndex: () => void
   private destroyed = false
 
-  private readonly buffer: number
-  private readonly hysteresis: number
+  private readonly buffer: () => number
+  private readonly hysteresis: () => number
   private readonly budgetMs: number
   private readonly maxOpsPerFrame: number
   private readonly schedule: (callback: () => void) => () => void
@@ -111,8 +114,8 @@ export class RxWindowedList<T, Id, L extends string = string> {
 
   constructor(private options: RxWindowedListOptions<T, Id, L>) {
     this.mountedIds = this.mountedIdSet
-    this.buffer = options.buffer ?? 0.75
-    this.hysteresis = options.hysteresis ?? 0.25
+    this.buffer = toGetter(options.buffer ?? 0.75)
+    this.hysteresis = toGetter(options.hysteresis ?? 0.25)
     this.budgetMs = options.budgetMs ?? 4
     this.maxOpsPerFrame = options.maxOpsPerFrame ?? Infinity
     this.schedule = options.schedule ?? defaultSchedule
@@ -193,8 +196,9 @@ export class RxWindowedList<T, Id, L extends string = string> {
     if (view) center = { x: view.x + view.width / 2, y: view.y + view.height / 2 }
 
     if (view && lodMounted) {
-      const enterRect = expandRect(view, this.buffer)
-      const keepRect = expandRect(view, this.buffer + this.hysteresis)
+      const buffer = this.buffer()
+      const enterRect = expandRect(view, buffer)
+      const keepRect = expandRect(view, buffer + this.hysteresis())
       this.options.index.forEachIn(enterRect, (id) => {
         targets.set(id, lod)
       })
@@ -351,6 +355,10 @@ export function rxWindowedList<T, Id, L extends string = string>(
   options: RxWindowedListOptions<T, Id, L>,
 ): RxWindowedList<T, Id, L> {
   return new RxWindowedList(options)
+}
+
+function toGetter(value: number | (() => number)): () => number {
+  return typeof value === 'function' ? value : () => value
 }
 
 function expandRect(rect: IndexBounds, ratio: number): IndexBounds {
