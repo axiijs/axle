@@ -1,7 +1,7 @@
 import { atom, ManualCleanup } from 'data0'
 import type { Atom } from 'data0'
 import type { ILeaferBase, IPointData, IUI } from 'leafer-ui'
-import { LayoutEvent, PointerEvent, PropertyEvent } from 'leafer-ui'
+import { LayoutEvent, MoveEvent, PointerEvent, PropertyEvent, ZoomEvent } from 'leafer-ui'
 import { assert, shallowEqual } from './util.js'
 
 /**
@@ -128,6 +128,52 @@ export class RxUIPosition extends RxLeaferState<IUI, IPointData> {
     }
 
     assign()
+  }
+}
+
+/**
+ * 视口手势进行中状态（05 号文档 §4「交互中降级」）：视口手势
+ * （平移 `MoveEvent` / 缩放 `ZoomEvent`，含滚轮触发的两者）开始时置 `true`，
+ * 静止 debounce（默认 150ms）后置 `false`。
+ *
+ * 消费方：`rxWindowedList` 在 interacting 期间冻结新挂载（只处理卸载与 pin），
+ * 视频帧绘制 / 图片升档等重活也可以据此暂停。
+ *
+ * ```ts
+ * const interacting = new RxViewportInteracting()
+ * interacting.ref(leafer)
+ * ```
+ */
+export class RxViewportInteracting extends RxLeaferState<ILeaferBase, boolean> {
+  private timer: ReturnType<typeof setTimeout> | null = null
+  constructor(
+    public debounceMs = 150,
+    value?: Atom<boolean | null>,
+  ) {
+    super(value)
+  }
+  listen(): void {
+    const leafer = this.target!
+    const onGesture = () => {
+      if (this.value.raw !== true) this.value(true)
+      if (this.timer) clearTimeout(this.timer)
+      this.timer = setTimeout(() => {
+        this.timer = null
+        this.value(false)
+      }, this.debounceMs)
+    }
+    const types = [MoveEvent.START, MoveEvent.MOVE, ZoomEvent.START, ZoomEvent.ZOOM]
+    for (const type of types) leafer.on(type, onGesture)
+    this.abort = (originTarget) => {
+      if (this.timer) {
+        clearTimeout(this.timer)
+        this.timer = null
+      }
+      this.value(null)
+      if (originTarget) for (const type of types) originTarget.off(type, onGesture)
+    }
+
+    this.value(false)
   }
 }
 
