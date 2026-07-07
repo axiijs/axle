@@ -24,5 +24,30 @@ export { EVENT_PROP_TO_TYPE, createPlaceholder, isPlaceholder } from './leafer.j
 
 export { BindingEffect, DeferredBindingEffect } from './BindingEffect.js'
 
-export { RxLeaferState, RxViewport, RxUIPosition, RxUIHovered } from './reactiveLeaferState.js'
+export {
+  RxLeaferState,
+  RxViewport,
+  RxUIPosition,
+  RxUIHovered,
+  RxViewportInteracting,
+} from './reactiveLeaferState.js'
 export type { ViewportState } from './reactiveLeaferState.js'
+
+// -- 超大规模画布高性能方案（doc/05-large-scale-performance.md） --
+
+export { bindEnginePosition } from './enginePosition.js'
+
+export { SpatialIndex, boundsIntersect } from './spatialIndex.js'
+export type { IndexBounds, SpatialIndexChange, SpatialIndexListener } from './spatialIndex.js'
+
+export { rxLodLevel } from './rxLodLevel.js'
+export type { LodLevelAtom, RxLodLevelOptions } from './rxLodLevel.js'
+
+export { RxWindowedList, rxWindowedList } from './rxWindowedList.js'
+export type { RxWindowedListOptions, WindowedRow } from './rxWindowedList.js'
+
+export { DotLayer, DotLayerUI, createDotLayer } from './dotLayer.js'
+export type { DotLayerOptions } from './dotLayer.js'
+
+export { createSharedTicker } from './sharedTicker.js'
+export type { SharedTicker } from './sharedTicker.js'

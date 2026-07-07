@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Axle Stress — 10k+ 卡片压测</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #0f1115;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: 8px 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid #23262d;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0 10px 0 0;
+        font-weight: 600;
+      }
+      header h1 span {
+        color: #7aa2ff;
+      }
+      header a {
+        color: #8a919e;
+        font-size: 12px;
+        text-decoration: none;
+      }
+      header a:hover {
+        color: #7aa2ff;
+      }
+      button,
+      .count-link {
+        background: #1c2027;
+        color: #e6e6e6;
+        border: 1px solid #2c313a;
+        border-radius: 6px;
+        padding: 5px 12px;
+        font-size: 12.5px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button:hover,
+      .count-link:hover {
+        background: #262b34;
+        border-color: #3a4150;
+      }
+      .count-link.active {
+        border-color: #7aa2ff;
+        color: #7aa2ff;
+      }
+      .sep {
+        width: 1px;
+        height: 20px;
+        background: #2c313a;
+      }
+      #zoom-level,
+      #lod-level {
+        min-width: 44px;
+        text-align: center;
+        font-size: 12.5px;
+        color: #8a919e;
+        font-variant-numeric: tabular-nums;
+      }
+      #lod-level {
+        color: #feca57;
+      }
+      .hint {
+        font-size: 12px;
+        color: #8a919e;
+        margin-left: auto;
+      }
+      #stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+      }
+      #canvas {
+        position: absolute;
+        inset: 0;
+      }
+      #stats {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 10;
+        background: rgba(15, 17, 21, 0.88);
+        border: 1px solid #2c313a;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 12px;
+        line-height: 1.7;
+        min-width: 230px;
+        pointer-events: none;
+        font-variant-numeric: tabular-nums;
+        white-space: pre;
+      }
+      #stats b {
+        color: #7aa2ff;
+      }
+      #stats .warn {
+        color: #ff6b6b;
+      }
+      #stats .ok {
+        color: #1dd1a1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Axle</span> Stress</h1>
+      <span id="count-links"></span>
+      <div class="sep"></div>
+      <button id="zoom-out">−</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in">＋</button>
+      <button id="zoom-fit">适应全部</button>
+      <button id="zoom-100">100%</button>
+      <span id="lod-level">dot</span>
+      <div class="sep"></div>
+      <button id="select-all">全选</button>
+      <button id="clear-selection">清除选中</button>
+      <button
+        id="move-offscreen"
+        title="程序化移动一张未挂载的卡片（验收：底衬色块须在下一帧更新）"
+      >
+        移动屏外卡片
+      </button>
+      <span class="hint">
+        滚轮缩放 · 空白处拖动平移 · 点击卡片选中 · 拖动卡片连线跟随 ·
+        <a href="./canvas.html">← 交互 demo</a>
+      </span>
+    </header>
+    <div id="stage">
+      <div id="canvas"></div>
+      <div id="stats">加载中…</div>
+    </div>
+    <script type="module" src="./stress.tsx"></script>
+  </body>
+</html>

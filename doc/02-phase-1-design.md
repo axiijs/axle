@@ -117,6 +117,15 @@ interface Host {
 }
 ```
 
+> **`getNodes()` 顺序契约的已知例外**：leafer 的 `zIndex` 会对父节点的
+> children 数组**物理重排**（占位符 zIndex 为 0，会被排到带 zIndex 的内容
+> 节点之前），此时 `getNodes()` 的顺序与场景图实际顺序**不再一致**。axle
+> 的插入/删除簿记是引用式的（`insertBefore` 实时取锚点下标），splice 路径
+> 可容忍重排；但 `RxListHost` 的 reorder（LIS 搬移）假设物理顺序与簿记
+> 一致——**绑定了 zIndex 的列表禁止触发 reorder patch**。背景与兼容性
+> 测试要求见 [05-large-scale-performance.md](./05-large-scale-performance.md)
+> §2.3。
+
 **占位符所有权**（谁的区间结构可变，谁保留占位符）：
 
 - `ElementHost` / `PrimitiveHost` / `AtomHost` / `RawUIHost`：内容节点本身稳定，

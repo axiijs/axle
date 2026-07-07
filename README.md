@@ -67,6 +67,16 @@ npm run playground   # 启动 vite，浏览器打开 playground
 
 示例代码在 [`playground/main.tsx`](./playground/main.tsx)，直接引用 `src/`，改运行时代码即时生效。
 
+另有两个进阶页面：
+
+- `/canvas.html`（[`playground/canvas.tsx`](./playground/canvas.tsx)）— 节点画布交互 POC
+  （卡片拖拽、port 连线、视口缩放平移）；
+- `/stress.html`（[`playground/stress.tsx`](./playground/stress.tsx)）— **超大规模压测**：
+  默认 1 万张图文/视频/文字卡片 + 按比例连线（URL 参数 `?n=50000` 可到 5 万），
+  完整实施 [doc/05-large-scale-performance.md](./doc/05-large-scale-performance.md)
+  的视口虚拟化 / LOD / DotLayer 底衬 / 交互中降级 / 媒体门控，带 FPS、
+  帧时长 P95、场景图节点数等指标面板。
+
 ## 开发
 
 ```bash
