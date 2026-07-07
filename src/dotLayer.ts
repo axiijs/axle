@@ -54,11 +54,7 @@ export class DotLayerUI extends UI {
   declare public __: IUIData
 
   /** 绘制回调：drawRect 是页面坐标的待重绘区域，scale 是当前世界缩放 */
-  onDrawContent?: (
-    ctx: CanvasRenderingContext2D,
-    drawRect: IndexBounds,
-    scale: number,
-  ) => void
+  onDrawContent?: (ctx: CanvasRenderingContext2D, drawRect: IndexBounds, scale: number) => void
 
   override __draw(canvas: ILeaferCanvas, options: IRenderOptions): void {
     if (!this.onDrawContent) return

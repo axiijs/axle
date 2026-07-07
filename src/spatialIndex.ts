@@ -37,9 +37,7 @@ type Entry = {
 }
 
 export function boundsIntersect(a: IndexBounds, b: IndexBounds): boolean {
-  return (
-    a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
-  )
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
 }
 
 export class SpatialIndex<Id> {
@@ -158,10 +156,7 @@ export class SpatialIndex<Id> {
    * count 是「以该 cell 为主 cell（包围盒左上角所在 cell）」的条目数，
    * 保证一个条目只计入一次。
    */
-  forEachCell(
-    rect: IndexBounds,
-    callback: (cellBounds: IndexBounds, count: number) => void,
-  ): void {
+  forEachCell(rect: IndexBounds, callback: (cellBounds: IndexBounds, count: number) => void): void {
     const minCx = Math.floor(rect.x / this.cellSize)
     const minCy = Math.floor(rect.y / this.cellSize)
     const maxCx = Math.floor((rect.x + rect.width) / this.cellSize)

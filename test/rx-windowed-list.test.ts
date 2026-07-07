@@ -53,7 +53,8 @@ function setup(options?: {
     cards.set(id, { id, name: `card-${id}` })
     index.set(id, { x, y, width: size, height: size })
   }
-  const viewRect = options?.viewRect ?? atom<IndexBounds | null>({ x: 0, y: 0, width: 100, height: 100 })
+  const viewRect =
+    options?.viewRect ?? atom<IndexBounds | null>({ x: 0, y: 0, width: 100, height: 100 })
   const scheduler = manualScheduler()
   const windowed = new RxWindowedList<Card, number, string>({
     index,

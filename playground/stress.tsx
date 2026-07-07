@@ -706,7 +706,6 @@ function simpleCardNode(card: CardModel) {
   )
 }
 
-
 /**
  * 连线：path 绑定两端卡片的 position atom（永远非 null）。
  * 档位差异（线宽/命中）是属性级绑定（§3.2 合法用法的正面示例）。
@@ -717,7 +716,12 @@ function EdgeView({ edge }: { edge: EdgeModel }) {
   return (
     <path
       path={() =>
-        wirePath(portPos(from, edge.from.side), edge.from.side, portPos(to, edge.to.side), edge.to.side)
+        wirePath(
+          portPos(from, edge.from.side),
+          edge.from.side,
+          portPos(to, edge.to.side),
+          edge.to.side,
+        )
       }
       stroke="#5b78c7"
       strokeWidth={() => (rxLod() === 'full' ? 2.5 : 1.2)}
@@ -870,12 +874,12 @@ setInterval(() => {
   const p95 = percentile(frameDurations, 0.95)
   const max = frameDurations.length ? Math.max(...frameDurations) : 0
   const fps = frameDurations.length
-    ? Math.round(1000 / (frameDurations.reduce((sum, value) => sum + value, 0) / frameDurations.length))
+    ? Math.round(
+        1000 / (frameDurations.reduce((sum, value) => sum + value, 0) / frameDurations.length),
+      )
     : 0
   const nodes = countNodes(leafer as unknown as IUI)
-  const memory = (
-    performance as unknown as { memory?: { usedJSHeapSize: number } }
-  ).memory
+  const memory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
   const heap = memory ? `${(memory.usedJSHeapSize / 1048576).toFixed(0)} MB` : 'n/a'
   const p95Class = p95 <= 20 ? 'ok' : 'warn'
   const nodesClass = nodes < 5000 ? 'ok' : 'warn'

@@ -103,9 +103,7 @@ describe('zIndex physical reorder × placeholder anchors (05 号文档 §2.3)', 
     expect(hostNodes.length).toBeGreaterThan(0)
 
     root.destroy()
-    expect(
-      (group.children ?? []).filter((child) => !isPlaceholder(child as IUI)).length,
-    ).toBe(0)
+    expect((group.children ?? []).filter((child) => !isPlaceholder(child as IUI)).length).toBe(0)
     leafer.destroy()
   })
 
