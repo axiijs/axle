@@ -37,6 +37,9 @@ patch 信息的增量列表，`autorun` / `ReactiveEffect` 提供依赖追踪。
 - **Phase 3 — 组件生态**：Component AOP（`$item:prop` 穿透配置）、常用画布组件
   （标尺 / 网格 / 参考线）、主题系统。
 
+横切主题：支撑上万张图文/视频卡片的超大规模画布高性能方案（视口虚拟化 /
+LOD / 媒体生命周期等），见 [05-large-scale-performance.md](./05-large-scale-performance.md)。
+
 ## 仓库结构
 
 ```
