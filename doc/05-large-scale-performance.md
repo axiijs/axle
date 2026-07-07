@@ -19,6 +19,11 @@
 >   触发源、行 diff 键 `(id, lod)`、卸载预算；写明挂载期间的位置接线
 >   （绑定方向与回声终止）；空间索引改为 write-through 维护；验收指标改为
 >   分位口径。
+> - v4 依据第三轮 review 修复跨系统边界的失效/契约/规格空白——DotLayer
+>   增加失效机制（订阅索引变更通知，纯数据变更也能触发重绘）；声明 zIndex
+>   物理重排对 Host `getNodes()` 顺序契约的例外（含兼容测试项与备选方案）；
+>   bounds 成为 model 一等公民（文字卡离屏测量策略）；定义 pinned 行在
+>   dot 档的形态；补齐预算队列的替换原子性、计量单位与自适应帧时间预算。
 
 ## 0. 现状与瓶颈定位
 
@@ -92,7 +97,9 @@ Phase 1/2 的架构已经把响应式层做到了正确的形状（见
     该回写被 leafer 属性 setter 的等值检查吸收为 no-op，环在一跳内终止。
   这正是 04 号文档当年刻意绕开的双向环——事实源反转后环不可避免，
   靠「写前守卫 + 等值 no-op」两道闸终止，需要单测覆盖（拖拽帧无第二次
-  `property.change`）。
+  `property.change`）。已知有界开销：x/y 两个绑定都依赖整个 `{x,y}` atom，
+  拖拽帧上桥写 2 次 atom（x/y 双事件，04 号文档已知）× 2 个绑定 =
+  每帧 4 次 no-op 求值；实现时可合并为单 effect 或拆分 x/y atom。
 - 04 号文档需要补一段适用边界说明，指向本文（配套改动，见实施顺序表）。
 
 ## 2. 视口虚拟化（收益最大，框架核心投入）
@@ -109,6 +116,13 @@ Phase 1/2 的架构已经把响应式层做到了正确的形状（见
   增量更新 O(1)）。先做网格，接口留出替换空间。
 - 索引内容：卡片 `id → bounds`（页面坐标包围盒）+ **连线条目**（见 §5），
   另维护 `cardId → edgeIds` 邻接表。
+- **bounds 是 model 的一等公民（硬约束）**：width/height 与位置一样持久化
+  在 model 上，索引只读 model，**绝不依赖引擎 layout 的测量结果**——
+  未挂载的卡片永远不会被 leafer 测量，靠引擎测量的 bounds 对虚拟化是
+  循环依赖。固定尺寸卡片（POC 形态）天然满足；**文字卡片的自动高度**
+  必须在创建/编辑内容时用离屏测量（`canvas.measureText` 折行计算，或
+  一次性离屏 leafer 测量）算出并写回 model，尺寸变化经 write-through
+  更新索引条目。
 - 增量维护采用 **write-through**，索引本身不做任何响应式订阅：位置写入
   统一收口——引擎桥（§1）在写 model atom 的同时同步更新索引条目及关联
   连线条目（经邻接表）；程序化/协同移动走 `moveCard(id, pos)` 类 helper，
@@ -158,13 +172,23 @@ const windowed = rxWindowedList(cards, {
 - **滞后带（hysteresis）**：进入阈值和退出阈值分开，避免卡片在缓冲区边界
   抖动导致反复挂载/卸载。
 - **按帧节流 + 挂载/卸载双向预算**：快速平移时一帧可能新进几百张卡片，
-  按「每帧最多挂载 N 张（如 20）」时间切片，优先挂载离视口中心近的，
-  其余排队；**卸载同样进预算队列**（优先卸离视口最远的）——档位切换、
-  手势结束等场景的整批卸载是同步 teardown（effect 拆除 + 监听解绑 +
-  节点移除引发的脏区合并），数百个 host 一帧销毁可能单独超出帧预算。
-  缓冲区 + 底衬层（§3.3）保证排队不产生视觉空洞。
+  时间切片分帧执行，优先挂载离视口中心近的，其余排队；**卸载同样进预算
+  队列**（优先卸离视口最远的）——档位切换、手势结束等场景的整批卸载是
+  同步 teardown（effect 拆除 + 监听解绑 + 节点移除引发的脏区合并），
+  数百个 host 一帧销毁可能单独超出帧预算。缓冲区 + 底衬层（§3.3）保证
+  排队不产生视觉空洞。预算队列的三条执行语义：
+  - **计量单位是「行操作」**，预算按**帧时间自适应**（如每帧结构操作
+    ≤ 4ms，实测校准），不用固定张数——固定「20 张/帧」在 simple 档
+    最坏情形（数百张）下补齐时间没有余量，且不同设备差异大；
+  - **同卡跨档位替换必须同帧成对执行**（同一批 splice 里 remove +
+    insert，替换对计 1 单位）——这是「旧行保持显示直到被替换（不闪空）」
+    成立的前提，实现成两个独立队列就会闪空；
+  - **优先级：替换 > 新挂载 > 卸载**（卸载最不可见，可以最晚做）。
 - **pin 语义**：拖拽中、选中集、正在播放的视频等必须保活，即使移出缓冲区。
-  pin 判定基于 id 集合（见 §8），不持有元素引用。
+  pin 判定基于 id 集合（见 §8），不持有元素引用。**pinned 行在 dot 档的
+  形态**：dot 档下行列表清空，但 pinned 行以 `simple` 形态保活（正在拖拽
+  的行保持进入 dot 档前的形态直到手势结束）；此时卡片屏幕尺寸只有几个
+  像素，选中反馈退化为底衬色块高亮，不再渲染选中框。
 
 ### 2.3 z-order 契约
 
@@ -175,6 +199,23 @@ const windowed = rxWindowedList(cards, {
 model 携带稳定的 `zOrder`（如创建序号），卡片 group 绑定 leafer 的
 `zIndex={card.zOrder}`；置顶/置底操作改 model 字段。连线层整层在卡片层
 下方，层内次序不敏感，无需逐条 z。
+
+**zIndex 与 Host 树契约的例外声明**：leafer 的 zIndex 是**物理重排**——
+`Branch.__updateSortChildren` 会对 children 数组原地 sort（zIndex 0 的
+axle 占位符会被排到带 zOrder 的卡片之前）。这使 02 号文档 Host 契约中
+「`getNodes()` 顺序与场景图一致」的不变量对绑定了 zIndex 的列表**不再
+成立**。分析结论与约束：
+
+- axle 的簿记是引用式的（`insertBefore` 调用时实时 `indexOf(anchor)`，
+  行 host 按引用持有、锚点取 `firstNode`），splice 路径可以容忍物理重排；
+- **绑定 zIndex 的列表禁止触发 reorder patch**（`RxListHost` 的 LIS 搬移
+  假设物理顺序与簿记一致）——窗口化列表只发 splice，天然满足，但必须
+  写进契约防止未来误用；
+- 「zIndex 重排 + 占位符锚点插入删除」的**兼容性测试**是实施硬性项
+  （见实施顺序表），02 号文档同步补例外说明；
+- **备选方案**（若测试发现问题的回退路径）：不用 zIndex，窗口化输出按
+  zOrder 排序、挂载时按序插入，z 变更 = 一次 remove + insert splice。
+  成本与 zIndex 方案相当，代价是 diff 逻辑多维护一个有序性。
 
 ### 2.4 与「组件只执行一次」模型的关系
 
@@ -247,8 +288,16 @@ leafer 对 < 10px 的元素本来就退化为 boxBounds 命中。若仍逐卡挂
 `__updateBoxBounds`），**常驻挂载在卡片层正下方**，覆盖全部档位：
 
 - 每次绘制从**空间索引**查询可见卡片，命令式绘制色块（accent 色小矩形），
-  一次遍历、零挂载、零 host 开销。不区分卡片挂没挂载、也不感知档位——
-  full/simple 档下已挂载的卡片自然盖住自己的色块，dot 档下色块就是全部；
+  一次遍历、零挂载、零 host 开销。不感知档位——full/simple 档下已挂载的
+  卡片盖住自己的色块，dot 档下色块就是全部。视觉细节：卡片圆角处会露出
+  底下色块直角，色块内缩 2px 或按挂载集合跳过已挂载卡片，二选一；
+- **失效机制（必须显式接线）**：DotLayer 在 leafer 的「属性变更 → 脏区 →
+  重绘」管线**之外**——本地拖拽和视口变化碰巧会产生覆盖它的脏区，但
+  **纯数据变更没有任何 leafer 属性变化**（协同/程序化移动未挂载卡片、
+  dot 档下增删卡片），不会触发任何重绘，色块会停在陈旧位置。因此
+  DotLayer 必须**订阅与窗口化列表同一条索引变更通知通道**（§2.2 触发源
+  3，rAF 合并），对变更条目新旧包围盒的并集主动失效（`forceRender` 或
+  等价的局部 invalidate）。这是协同场景正确性的必要条件，不是优化；
 - **兜底职责**：手势中冻结挂载（§4）、预算队列排队中、长距离跳转后，
   未挂载区域显示的是色块而不是空白；预算补挂的视觉效果是「色块 → 细节
   浮现」。DotLayer 的绘制只依赖索引，不受挂载预算约束；
@@ -399,19 +448,20 @@ dot 档，首帧就是一次底衬自绘，可交互时间趋近于零。
 | -- | ---- | -- | ---- | ---- |
 | 1  | 压测 playground + 指标面板（先建基线） | 10 | playground | 无 |
 | 2  | 事实源反转：model position atom + 引擎桥 + 04 文档边界修订 | 1 | axle src/doc | 无 |
-| 3  | `spatialIndex`（卡片 + 连线条目 + 邻接表，网格版） | 2/5 | axle src | 2 |
-| 4  | `rxWindowedList`（批量 splice、滞后带、预算、pin、lod 输入、z-order 契约） | 2/3 | axle src | 3 |
-| 5  | `rxLodLevel` 档位 atom（迟滞去抖） | 3 | axle src | 无 |
-| 6  | full/simple 档卡片渲染 + 去阴影（配方沉淀） | 3 | playground/doc | 4,5 |
-| 7  | DotLayer 常驻底衬层（单节点自绘 + 密度聚合，核心路径） | 3 | axle src + playground | 3,5 |
-| 8  | `RxViewportInteracting` + 手势中冻结挂载 | 4 | axle src | 4 |
-| 9  | 连线窗口化 + 连线 LOD | 5 | axle/playground | 3,4 |
-| 10 | 视频全局 ticker + 并发上限 + 门控 | 7 | axle util + playground | 4,5 |
-| 11 | 缩略图金字塔 + 解码队列 | 7 | playground（配方） | 5 |
-| 12 | port 按需挂载 + hittable 收敛 | 6 | playground（配方） | 无 |
-| 13 | 选中集 id 化 + pin 上限规则（Phase 3 编辑器集成的输入） | 8 | axle doc + playground | 4 |
-| 14 | 空间分桶 chunking（兜底） | 6 | axle/playground | 4 |
-| 15 | 槽位复用池 | 2 | 应用层模式 | 实测后决定 |
+| 3  | `spatialIndex`（卡片 + 连线条目 + 邻接表，网格版；bounds 持久化约定 + 文字卡离屏测量） | 2/5 | axle src + playground | 2 |
+| 4  | `rxWindowedList`（批量 splice、滞后带、自适应双向预算 + 替换原子性、pin、lod 输入、z-order 契约） | 2/3 | axle src | 3 |
+| 5  | zIndex 物理重排 × 占位符锚点兼容性测试 + 02 文档契约例外说明 | 2 | axle test/doc | 4 |
+| 6  | `rxLodLevel` 档位 atom（迟滞去抖） | 3 | axle src | 无 |
+| 7  | full/simple 档卡片渲染 + 去阴影（配方沉淀） | 3 | playground/doc | 4,6 |
+| 8  | DotLayer 常驻底衬层（单节点自绘 + 密度聚合 + 索引失效接线，核心路径） | 3 | axle src + playground | 3,6 |
+| 9  | `RxViewportInteracting` + 手势中冻结挂载 | 4 | axle src | 4 |
+| 10 | 连线窗口化 + 连线 LOD | 5 | axle/playground | 3,4 |
+| 11 | 视频全局 ticker + 并发上限 + 门控 | 7 | axle util + playground | 4,6 |
+| 12 | 缩略图金字塔 + 解码队列 | 7 | playground（配方） | 6 |
+| 13 | port 按需挂载 + hittable 收敛 | 6 | playground（配方） | 无 |
+| 14 | 选中集 id 化 + pin 上限规则（Phase 3 编辑器集成的输入） | 8 | axle doc + playground | 4 |
+| 15 | 空间分桶 chunking（兜底） | 6 | axle/playground | 4 |
+| 16 | 槽位复用池 | 2 | 应用层模式 | 实测后决定 |
 
 框架/应用分界原则：**axle 只沉淀与具体卡片形态无关的机制**（索引、窗口化
 列表、档位 atom、交互状态、DotLayer 基类、共享 ticker），LOD 的档位划分、
