@@ -540,10 +540,14 @@ function FullCard({ card }: { card: CardModel }) {
     <group
       ref={[
         hovered.ref,
-        bindEnginePosition(card.position, { onSync: () => writeThroughCard(card) }),
+        // bindPosition：单 effect 写双轴（省一半 no-op 求值）；
+        // coalesce：x/y 双轴事件合并为每帧一次写穿（下游连线/索引减半）
+        bindEnginePosition(card.position, {
+          bindPosition: true,
+          coalesce: true,
+          onSync: () => writeThroughCard(card),
+        }),
       ]}
-      x={() => card.position().x}
-      y={() => card.position().y}
       zIndex={card.zOrder}
       draggable={true}
       cursor="grab"
@@ -653,9 +657,11 @@ function simpleCardNode(card: CardModel) {
   const isSelected = () => selected().has(card.id)
   return (
     <group
-      ref={bindEnginePosition(card.position, { onSync: () => writeThroughCard(card) })}
-      x={() => card.position().x}
-      y={() => card.position().y}
+      ref={bindEnginePosition(card.position, {
+        bindPosition: true,
+        coalesce: true,
+        onSync: () => writeThroughCard(card),
+      })}
       zIndex={card.zOrder}
       draggable={true}
       onTap={() => toggleSelect(card.id)}
