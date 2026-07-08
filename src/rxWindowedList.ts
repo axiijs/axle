@@ -14,7 +14,10 @@ import { boundsIntersect } from './spatialIndex.js'
  *   （§2.3 z-order 契约）；绑定 zIndex 的列表禁止 reorder patch，
  *   本列表天然满足。
  * - **四类重算触发源**：视口变化、档位变化、空间索引变更（write-through
- *   通知）、pin 集合变化，全部在 rAF 边界合并为一次重算。
+ *   通知）、pin 集合变化，全部在 rAF 边界合并处理。其中视口/档位/pin
+ *   变化移动窗口本身，走全量重算；**索引变更走增量判定**——只对变更条目
+ *   基于缓存窗口做进出判断并修补队列（拖拽帧上卡片 + 邻接连线逐帧更新
+ *   索引，不应触发全量查询 + diff + 排序）。
  * - **滞后带**：进入阈值（buffer）与退出阈值（buffer + hysteresis）分开，
  *   缓冲区边界抖动不会反复挂卸。
  * - **双向预算队列**：挂载与卸载都分帧执行，预算按帧时间自适应
@@ -114,9 +117,27 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private replaceCursor = 0
   private mountCursor = 0
   private unmountCursor = 0
+  // 队列有效成员集合：增量路径的去重与撤销通道。数组里的任务出队时若 id
+  // 已不在集合中则视为已撤销、直接跳过（不占预算）。pendingCount 以集合为准。
+  private queuedReplaceIds = new Set<Id>()
+  private queuedMountIds = new Set<Id>()
+  private queuedUnmountIds = new Set<Id>()
   private pinnedSet = new Set<Id>()
 
   private recomputeNeeded = true
+  /**
+   * 触发源 3 的增量通道：索引 write-through 变更只累积变更 id，
+   * 在帧边界对每个变更条目做局部判定（进出窗口），不做全量重算。
+   * 视口/档位/pin/interacting 变化仍走全量 recompute（它们会移动窗口本身）。
+   */
+  private pendingChangedIds = new Set<Id>()
+  // 上一次全量 recompute 缓存的窗口（增量判定与挂卸前的失效校验共用）。
+  // 视口/档位输入变化必然触发全量重算刷新缓存，索引变更不影响窗口本身。
+  private lastEnterRect: IndexBounds | null = null
+  private lastKeepRect: IndexBounds | null = null
+  private lastLod: L = 'default' as L
+  private lastLodMounted = true
+  private lastCenter: { x: number; y: number } | null = null
   private cancelFrame: (() => void) | null = null
   private stopAutorun: () => void
   private unsubscribeIndex: () => void
@@ -138,8 +159,8 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.schedule = options.schedule ?? defaultSchedule
     this.now = options.now ?? (() => performance.now())
 
-    // 触发源 3：索引 write-through 变更通知（同帧合并）
-    this.unsubscribeIndex = options.index.subscribe(() => this.invalidate())
+    // 触发源 3：索引 write-through 变更通知（同帧合并，走增量判定）
+    this.unsubscribeIndex = options.index.subscribe((change) => this.invalidateEntry(change.id))
     // 触发源 1/2/4 + interacting 翻转：autorun 追踪全部响应式输入
     this.stopAutorun = autorun(() => {
       options.viewRect()
@@ -152,16 +173,20 @@ export class RxWindowedList<T, Id, L extends string = string> {
   }
 
   get pendingCount(): number {
-    return (
-      this.pendingReplaces.length -
-      this.replaceCursor +
-      (this.pendingMounts.length - this.mountCursor) +
-      (this.pendingUnmounts.length - this.unmountCursor)
-    )
+    return this.queuedReplaceIds.size + this.queuedMountIds.size + this.queuedUnmountIds.size
   }
 
   private invalidate(): void {
     this.recomputeNeeded = true
+    this.scheduleFrame()
+  }
+
+  /**
+   * 触发源 3 的增量入口：索引变更只累积变更 id，帧边界逐条局部判定。
+   * 拖拽帧上（卡片 + 邻接连线各一条变更）不再触发全量重算 + 排序。
+   */
+  private invalidateEntry(id: Id): void {
+    this.pendingChangedIds.add(id)
     this.scheduleFrame()
   }
 
@@ -178,10 +203,17 @@ export class RxWindowedList<T, Id, L extends string = string> {
     if (this.destroyed) return
     if (this.recomputeNeeded) {
       this.recomputeNeeded = false
+      // 全量重算覆盖增量判定（队列会整体重建）
+      this.pendingChangedIds.clear()
       this.recompute()
+    } else if (this.pendingChangedIds.size) {
+      for (const id of this.pendingChangedIds) this.applyIncrementalChange(id)
+      this.pendingChangedIds.clear()
     }
     this.drain()
-    if (this.recomputeNeeded || this.actionableCount() > 0) this.scheduleFrame()
+    if (this.recomputeNeeded || this.pendingChangedIds.size || this.actionableCount() > 0) {
+      this.scheduleFrame()
+    }
   }
 
   /**
@@ -191,16 +223,22 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private actionableCount(): number {
     if (this.options.interacting?.() !== true) return this.pendingCount
     let pinnedMounts = 0
-    for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
-      if (this.pinnedSet.has(this.pendingMounts[i]!.id)) pinnedMounts++
+    for (const id of this.queuedMountIds) {
+      if (this.pinnedSet.has(id)) pinnedMounts++
     }
-    return this.pendingUnmounts.length - this.unmountCursor + pinnedMounts
+    return this.queuedUnmountIds.size + pinnedMounts
   }
 
   /** 一直 flush 到队列排空（测试 / 需要同步收敛的场景用，绕过预算） */
   flushAll(): void {
     // 递归触发（recompute 引发新的 invalidate）以 32 帧为限，防御死循环
-    for (let i = 0; i < 32 && (this.pendingCount || this.recomputeNeeded); i++) this.flush()
+    for (
+      let i = 0;
+      i < 32 && (this.pendingCount || this.recomputeNeeded || this.pendingChangedIds.size);
+      i++
+    ) {
+      this.flush()
+    }
   }
 
   private recompute(): void {
@@ -217,10 +255,19 @@ export class RxWindowedList<T, Id, L extends string = string> {
     let center: { x: number; y: number } | null = null
     if (view) center = { x: view.x + view.width / 2, y: view.y + view.height / 2 }
 
+    // 缓存本次窗口，供触发源 3 的增量判定使用（索引变更不影响窗口本身）
+    this.lastLod = lod
+    this.lastLodMounted = lodMounted
+    this.lastCenter = center
+    this.lastEnterRect = null
+    this.lastKeepRect = null
+
     if (view && lodMounted) {
       const buffer = this.buffer()
       const enterRect = expandRect(view, buffer)
       const keepRect = expandRect(view, buffer + this.hysteresis())
+      this.lastEnterRect = enterRect
+      this.lastKeepRect = keepRect
       this.options.index.forEachIn(enterRect, (id) => {
         targets.set(id, lod)
       })
@@ -252,15 +299,7 @@ export class RxWindowedList<T, Id, L extends string = string> {
     const mounts: MountTask<Id, L>[] = []
     const unmounts: { id: Id; distance: number }[] = []
 
-    const distanceOf = (id: Id): number => {
-      if (!center) return 0
-      const bounds = this.options.index.get(id)
-      // 已从索引删除的条目优先卸载（排到队首）
-      if (!bounds) return -1
-      const dx = bounds.x + bounds.width / 2 - center.x
-      const dy = bounds.y + bounds.height / 2 - center.y
-      return dx * dx + dy * dy
-    }
+    const distanceOf = (id: Id): number => this.distanceTo(this.options.index.get(id))
 
     for (const [id, targetLod] of targets) {
       const current = this.mounted.get(id)
@@ -285,6 +324,81 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.replaceCursor = 0
     this.mountCursor = 0
     this.unmountCursor = 0
+    this.queuedReplaceIds.clear()
+    this.queuedMountIds.clear()
+    this.queuedUnmountIds.clear()
+    for (const task of replaces) this.queuedReplaceIds.add(task.id)
+    for (const task of mounts) this.queuedMountIds.add(task.id)
+    for (const task of unmounts) this.queuedUnmountIds.add(task.id)
+  }
+
+  /**
+   * 对单个条目复算目标档位（与 recompute 的目标集合规则逐条对应），
+   * undefined 表示不应挂载。
+   */
+  private targetLodFor(id: Id, bounds: IndexBounds | undefined): L | undefined {
+    if (bounds && this.lastEnterRect && boundsIntersect(bounds, this.lastEnterRect)) {
+      return this.lastLod
+    }
+    // 滞后带：已挂载且仍在 keepRect 内不卸载
+    if (
+      bounds &&
+      this.lastKeepRect &&
+      this.mounted.has(id) &&
+      boundsIntersect(bounds, this.lastKeepRect)
+    ) {
+      return this.lastLod
+    }
+    // pin 规则与 recompute 的 pinnedSet 分支一致
+    if (this.pinnedSet.has(id)) {
+      const mountedLod = this.mounted.get(id)
+      if (mountedLod !== undefined) return mountedLod
+      if (bounds) {
+        return this.lastLodMounted
+          ? this.lastLod
+          : (this.options.pinnedLodWhenUnmounted ?? this.lastLod)
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * 触发源 3 的增量判定：基于缓存的窗口对单个变更条目做进出判断，
+   * 修补任务队列（含撤销既有的反向任务），不触碰其余条目。
+   */
+  private applyIncrementalChange(id: Id): void {
+    const bounds = this.options.index.get(id)
+    const desired = this.targetLodFor(id, bounds)
+    const current = this.mounted.get(id)
+
+    // 先撤销该 id 既有的排队任务（数组里的残留任务出队时按集合跳过）
+    this.queuedReplaceIds.delete(id)
+    this.queuedMountIds.delete(id)
+    this.queuedUnmountIds.delete(id)
+
+    const distance = this.distanceTo(bounds)
+    if (desired === undefined) {
+      if (current !== undefined) {
+        this.pendingUnmounts.push({ id, distance })
+        this.queuedUnmountIds.add(id)
+      }
+    } else if (current === undefined) {
+      this.pendingMounts.push({ id, lod: desired, distance })
+      this.queuedMountIds.add(id)
+    } else if (current !== desired) {
+      this.pendingReplaces.push({ id, lod: desired, distance })
+      this.queuedReplaceIds.add(id)
+    }
+  }
+
+  private distanceTo(bounds: IndexBounds | undefined): number {
+    const center = this.lastCenter
+    if (!center) return 0
+    // 已从索引删除的条目优先卸载（排到队首）
+    if (!bounds) return -1
+    const dx = bounds.x + bounds.width / 2 - center.x
+    const dy = bounds.y + bounds.height / 2 - center.y
+    return dx * dx + dy * dy
   }
 
   private drain(): void {
@@ -298,6 +412,8 @@ export class RxWindowedList<T, Id, L extends string = string> {
     while (this.replaceCursor < this.pendingReplaces.length && hasBudget()) {
       if (interacting) break // 手势中冻结跨档位替换（旧行保持显示，底衬兜底）
       const task = this.pendingReplaces[this.replaceCursor++]!
+      // 已被增量判定撤销的任务直接跳过（不占预算）
+      if (!this.queuedReplaceIds.delete(task.id)) continue
       this.applyReplace(task.id, task.lod)
       ops++
     }
@@ -307,7 +423,9 @@ export class RxWindowedList<T, Id, L extends string = string> {
         const rest: MountTask<Id, L>[] = []
         for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
           const task = this.pendingMounts[i]!
+          if (!this.queuedMountIds.has(task.id)) continue // 已撤销
           if (this.pinnedSet.has(task.id) && hasBudget()) {
+            this.queuedMountIds.delete(task.id)
             this.applyMount(task.id, task.lod)
             ops++
           } else {
@@ -327,6 +445,7 @@ export class RxWindowedList<T, Id, L extends string = string> {
           const rows: WindowedRow<T, Id, L>[] = []
           while (this.mountCursor < batchLimit) {
             const task = this.pendingMounts[this.mountCursor++]!
+            if (!this.queuedMountIds.delete(task.id)) continue // 已撤销
             const row = this.buildMountRow(task.id, task.lod)
             if (row) rows.push(row)
             ops++
@@ -337,6 +456,7 @@ export class RxWindowedList<T, Id, L extends string = string> {
     }
     while (this.unmountCursor < this.pendingUnmounts.length && hasBudget()) {
       const task = this.pendingUnmounts[this.unmountCursor++]!
+      if (!this.queuedUnmountIds.delete(task.id)) continue // 已撤销
       this.applyUnmount(task.id)
       ops++
     }
@@ -417,6 +537,10 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.replaceCursor = 0
     this.mountCursor = 0
     this.unmountCursor = 0
+    this.queuedReplaceIds.clear()
+    this.queuedMountIds.clear()
+    this.queuedUnmountIds.clear()
+    this.pendingChangedIds.clear()
     this.rows.destroy()
   }
 }

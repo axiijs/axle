@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { atom } from 'data0'
 import type { Atom } from 'data0'
 import { SpatialIndex, RxWindowedList } from '@axiijs/axle'
@@ -376,6 +376,98 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     scheduler.settle()
     expect(windowed.rows.data.length).toBe(0)
     expect(windowed.pendingCount).toBe(0)
+    windowed.destroy()
+  })
+
+  it('index-only changes take the incremental path (no full recompute)', () => {
+    const { index, addCard, scheduler, windowed, mountedIds } = setup()
+    addCard(1, 10, 10)
+    addCard(2, 60, 60)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 2])
+
+    const recompute = vi.spyOn(windowed as unknown as { recompute: () => void }, 'recompute')
+
+    // 拖拽帧模拟：视口内条目微移 → 无结构变化，也不做全量重算
+    index.set(1, { x: 12, y: 12, width: 10, height: 10 })
+    scheduler.settle()
+    expect(recompute).not.toHaveBeenCalled()
+    expect(mountedIds()).toEqual([1, 2])
+    expect(windowed.stats.unmounts).toBe(0)
+
+    // 移出窗口 → 增量卸载
+    index.set(1, { x: 900, y: 900, width: 10, height: 10 })
+    scheduler.settle()
+    expect(recompute).not.toHaveBeenCalled()
+    expect(mountedIds()).toEqual([2])
+
+    // 移回 → 增量挂载
+    index.set(1, { x: 20, y: 20, width: 10, height: 10 })
+    scheduler.settle()
+    expect(recompute).not.toHaveBeenCalled()
+    expect(mountedIds()).toEqual([1, 2])
+
+    // 视口变化仍走全量重算
+    windowed.destroy()
+  })
+
+  it('incremental judgement honours the hysteresis band when the entry itself moves', () => {
+    const { index, addCard, scheduler, windowed, mountedIds } = setup()
+    // buffer 0.5 / hysteresis 0.25：进入 [-50,150]，保留 [-75,175]
+    addCard(1, 100, 50)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+
+    // 条目自己滑出 buffer 但仍在滞后带内 → 不卸载
+    index.set(1, { x: 160, y: 50, width: 10, height: 10 })
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+
+    // 滑出滞后带 → 卸载
+    index.set(1, { x: 180, y: 50, width: 10, height: 10 })
+    scheduler.settle()
+    expect(mountedIds()).toEqual([])
+    windowed.destroy()
+  })
+
+  it('same-frame move out and back cancels pending structural ops (no flicker)', () => {
+    const { index, addCard, scheduler, windowed, mountedIds } = setup()
+    addCard(1, 10, 10)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+
+    // 同一帧内移出又移回：最终判定为「保持挂载」，不产生卸载
+    index.set(1, { x: 900, y: 900, width: 10, height: 10 })
+    index.set(1, { x: 15, y: 15, width: 10, height: 10 })
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+    expect(windowed.stats.unmounts).toBe(0)
+    windowed.destroy()
+  })
+
+  it('a frozen mount task is cancelled when the entry moves back out during the gesture', () => {
+    const interacting = atom(false)
+    const { index, addCard, scheduler, windowed, mountedIds } = setup({
+      interacting: () => interacting(),
+    })
+    addCard(1, 900, 900)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([])
+
+    interacting(true)
+    index.set(1, { x: 10, y: 10, width: 10, height: 10 }) // 移入 → 挂载任务排队但被冻结
+    scheduler.settle()
+    expect(mountedIds()).toEqual([])
+    expect(windowed.pendingCount).toBe(1)
+
+    index.set(1, { x: 900, y: 900, width: 10, height: 10 }) // 手势中又移出 → 任务撤销
+    scheduler.settle()
+    expect(windowed.pendingCount).toBe(0)
+
+    interacting(false)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([])
+    expect(windowed.stats.mounts).toBe(0)
     windowed.destroy()
   })
 
