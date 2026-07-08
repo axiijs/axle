@@ -193,6 +193,33 @@ describe('RxListHost row types', () => {
     expect(contentChildren(group!).map((c) => c.x)).toEqual([2])
   })
 
+  it('component rows anchor correctly for inserts before/between them (placeholder elision)', () => {
+    // ComponentHost render 后不再保留自己的占位符，锚点委托给 innerHost；
+    // 本用例保证行前插入 / 行间插入的锚点查找在该契约下仍然正确
+    function Row({ value }: Props) {
+      return <rect x={value as number} />
+    }
+    const items = new RxList([2, 4])
+    const { container } = mount(
+      <group>
+        {items.map((i) => (
+          <Row value={i} />
+        ))}
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!).map((c) => c.x)).toEqual([2, 4])
+
+    items.unshift(1) // 行前插入：锚点是首个组件行的 innerHost 首节点
+    expect(contentChildren(group!).map((c) => c.x)).toEqual([1, 2, 4])
+    items.splice(2, 0, 3) // 行间插入
+    expect(contentChildren(group!).map((c) => c.x)).toEqual([1, 2, 3, 4])
+    items.push(5)
+    expect(contentChildren(group!).map((c) => c.x)).toEqual([1, 2, 3, 4, 5])
+    items.splice(1, 2)
+    expect(contentChildren(group!).map((c) => c.x)).toEqual([1, 4, 5])
+  })
+
   it('supports rows that are groups with children', () => {
     const items = new RxList(['a', 'b'])
     const { container } = mount(
