@@ -318,6 +318,67 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('batches same-frame mounts into multi-row splices (fewer trigger dispatches)', () => {
+    const { addCard, scheduler, windowed, mountedIds } = setup()
+    for (let i = 1; i <= 6; i++) addCard(i, i * 10, i * 10)
+
+    const splices: { deleted: number; inserted: number }[] = []
+    const originalSplice = windowed.rows.splice.bind(windowed.rows)
+    windowed.rows.splice = (start: number, deleteCount: number, ...items: never[]) => {
+      splices.push({ deleted: deleteCount, inserted: items.length })
+      return originalSplice(start, deleteCount, ...items)
+    }
+
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 2, 3, 4, 5, 6])
+    // 6 个挂载合并为 2 次 splice（批大小 4 + 2），而不是 6 次
+    expect(splices).toEqual([
+      { deleted: 0, inserted: 4 },
+      { deleted: 0, inserted: 2 },
+    ])
+    expect(windowed.stats.mounts).toBe(6)
+    windowed.destroy()
+  })
+
+  it('keeps row bookkeeping consistent across interleaved unmounts and replaces (index hints)', () => {
+    const lod = atom('full')
+    const { index, addCard, viewRect, scheduler, windowed, mountedIds } = setup({
+      lod: () => lod(),
+    })
+    for (let i = 1; i <= 5; i++) addCard(i, i * 15, 10)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 2, 3, 4, 5])
+
+    // 卸载两个不相邻的行（挂载序是中心优先，删除位置分散），后续行下标左移
+    index.delete(2)
+    index.delete(4)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 3, 5])
+
+    // 下标左移后替换仍能命中正确的行（提示向左扫描）
+    lod('simple')
+    scheduler.settle()
+    expect(
+      windowed.rows.data
+        .map((row) => ({ id: row.id, lod: row.lod }))
+        .sort((a, b) => a.id - b.id),
+    ).toEqual([
+      { id: 1, lod: 'simple' },
+      { id: 3, lod: 'simple' },
+      { id: 5, lod: 'simple' },
+    ])
+
+    // 再挂载新行 append 在尾部，随后卸载全部，簿记归零
+    addCard(6, 70, 10)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 3, 5, 6])
+    viewRect({ x: 900, y: 900, width: 100, height: 100 })
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(0)
+    expect(windowed.pendingCount).toBe(0)
+    windowed.destroy()
+  })
+
   it('destroy stops scheduling and clears queues', () => {
     const { addCard, scheduler, windowed } = setup()
     addCard(1, 10, 10)

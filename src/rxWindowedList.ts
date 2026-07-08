@@ -72,6 +72,12 @@ export type RxWindowedListOptions<T, Id, L extends string> = {
 
 type MountTask<Id, L> = { id: Id; lod: L; distance: number }
 
+/**
+ * 时间预算模式下每批合并 splice 的挂载行数上限：批内不检查预算，
+ * 批越大 trigger 派发越少、但预算粒度越粗（最多超出一批的时间）。
+ */
+const MOUNT_BATCH = 4
+
 const defaultSchedule = (callback: () => void): (() => void) => {
   const handle = requestAnimationFrame(callback)
   return () => cancelAnimationFrame(handle)
@@ -93,10 +99,21 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private mounted = new Map<Id, L>()
   private mountedIdSet = new Set<Id>()
   private rowIds: Id[] = []
+  /**
+   * id → 行下标提示。挂载只会 append（下标不变），卸载/替换的 splice 只会让
+   * 后续行下标左移，所以提示只可能偏大——查找时从提示位置向左扫描即可，
+   * 均摊 O(1)，替代整条 rowIds 的 indexOf 线性扫描。
+   */
+  private rowIndexHint = new Map<Id, number>()
 
+  // 三个任务队列消化时用游标前进（shift 是 O(队列长度) 的整体搬移，
+  // 缩放进低档位时队列可达数千条）；recompute 重建队列时游标归零。
   private pendingReplaces: MountTask<Id, L>[] = []
   private pendingMounts: MountTask<Id, L>[] = []
   private pendingUnmounts: { id: Id; distance: number }[] = []
+  private replaceCursor = 0
+  private mountCursor = 0
+  private unmountCursor = 0
   private pinnedSet = new Set<Id>()
 
   private recomputeNeeded = true
@@ -135,7 +152,12 @@ export class RxWindowedList<T, Id, L extends string = string> {
   }
 
   get pendingCount(): number {
-    return this.pendingReplaces.length + this.pendingMounts.length + this.pendingUnmounts.length
+    return (
+      this.pendingReplaces.length -
+      this.replaceCursor +
+      (this.pendingMounts.length - this.mountCursor) +
+      (this.pendingUnmounts.length - this.unmountCursor)
+    )
   }
 
   private invalidate(): void {
@@ -169,10 +191,10 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private actionableCount(): number {
     if (this.options.interacting?.() !== true) return this.pendingCount
     let pinnedMounts = 0
-    for (const task of this.pendingMounts) {
-      if (this.pinnedSet.has(task.id)) pinnedMounts++
+    for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
+      if (this.pinnedSet.has(this.pendingMounts[i]!.id)) pinnedMounts++
     }
-    return this.pendingUnmounts.length + pinnedMounts
+    return this.pendingUnmounts.length - this.unmountCursor + pinnedMounts
   }
 
   /** 一直 flush 到队列排空（测试 / 需要同步收敛的场景用，绕过预算） */
@@ -260,6 +282,9 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.pendingReplaces = replaces
     this.pendingMounts = mounts
     this.pendingUnmounts = unmounts
+    this.replaceCursor = 0
+    this.mountCursor = 0
+    this.unmountCursor = 0
   }
 
   private drain(): void {
@@ -270,17 +295,18 @@ export class RxWindowedList<T, Id, L extends string = string> {
       ops < this.maxOpsPerFrame && (ops === 0 || this.now() - start < this.budgetMs)
 
     // 替换 > 新挂载 > 卸载。替换是同一 splice 里的 remove + insert（原子，计 1 单位）
-    while (this.pendingReplaces.length && hasBudget()) {
+    while (this.replaceCursor < this.pendingReplaces.length && hasBudget()) {
       if (interacting) break // 手势中冻结跨档位替换（旧行保持显示，底衬兜底）
-      const task = this.pendingReplaces.shift()!
+      const task = this.pendingReplaces[this.replaceCursor++]!
       this.applyReplace(task.id, task.lod)
       ops++
     }
-    if (this.pendingMounts.length) {
+    if (this.mountCursor < this.pendingMounts.length) {
       if (interacting) {
         // 手势中挂载预算置 0，但 pin 行（拖拽中/选中）仍需挂载
         const rest: MountTask<Id, L>[] = []
-        for (const task of this.pendingMounts) {
+        for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
+          const task = this.pendingMounts[i]!
           if (this.pinnedSet.has(task.id) && hasBudget()) {
             this.applyMount(task.id, task.lod)
             ops++
@@ -289,48 +315,89 @@ export class RxWindowedList<T, Id, L extends string = string> {
           }
         }
         this.pendingMounts = rest
+        this.mountCursor = 0
       } else {
-        while (this.pendingMounts.length && hasBudget()) {
-          const task = this.pendingMounts.shift()!
-          this.applyMount(task.id, task.lod)
-          ops++
+        // 同帧内的多个挂载合并为一次多行 splice（挂载恒定 append 在尾部），
+        // 每批之间检查预算。批量减少 RxList trigger 派发与下游 patch 次数。
+        while (this.mountCursor < this.pendingMounts.length && hasBudget()) {
+          const batchLimit = Math.min(
+            this.mountCursor + Math.max(1, Math.min(MOUNT_BATCH, this.maxOpsPerFrame - ops)),
+            this.pendingMounts.length,
+          )
+          const rows: WindowedRow<T, Id, L>[] = []
+          while (this.mountCursor < batchLimit) {
+            const task = this.pendingMounts[this.mountCursor++]!
+            const row = this.buildMountRow(task.id, task.lod)
+            if (row) rows.push(row)
+            ops++
+          }
+          if (rows.length) this.commitMountRows(rows)
         }
       }
     }
-    while (this.pendingUnmounts.length && hasBudget()) {
-      const task = this.pendingUnmounts.shift()!
+    while (this.unmountCursor < this.pendingUnmounts.length && hasBudget()) {
+      const task = this.pendingUnmounts[this.unmountCursor++]!
       this.applyUnmount(task.id)
       ops++
     }
   }
 
-  private applyMount(id: Id, lod: L): void {
+  /**
+   * 用下标提示定位 id 的当前行下标。提示只可能偏大（splice 只会让后续行
+   * 左移），从提示位置向左扫描，均摊 O(1)。
+   */
+  private rowIndexOf(id: Id): number {
+    let index = this.rowIndexHint.get(id)
+    if (index === undefined) return -1
+    const rowIds = this.rowIds
+    if (index >= rowIds.length) index = rowIds.length - 1
+    while (index >= 0 && rowIds[index] !== id) index--
+    return index
+  }
+
+  /** 校验挂载条件并构造行对象（不写列表）。返回 null 表示该任务已失效 */
+  private buildMountRow(id: Id, lod: L): WindowedRow<T, Id, L> | null {
     // 队列构建后索引可能又变（同帧内先删后挂），挂载前再确认一次
-    if (!this.options.index.has(id) && !this.pinnedSet.has(id)) return
-    if (this.mounted.has(id)) return
-    const row: WindowedRow<T, Id, L> = { id, item: this.options.resolve(id), lod }
-    this.rows.splice(this.rowIds.length, 0, row)
-    this.rowIds.push(id)
-    this.mounted.set(id, lod)
-    this.mountedIdSet.add(id)
-    this.stats.mounts++
+    if (!this.options.index.has(id) && !this.pinnedSet.has(id)) return null
+    if (this.mounted.has(id)) return null
+    return { id, item: this.options.resolve(id), lod }
+  }
+
+  /** 把一批行以单次 splice append 到列表尾部（含全部簿记） */
+  private commitMountRows(rows: WindowedRow<T, Id, L>[]): void {
+    const start = this.rowIds.length
+    for (const row of rows) {
+      this.rowIndexHint.set(row.id, this.rowIds.length)
+      this.rowIds.push(row.id)
+      this.mounted.set(row.id, row.lod)
+      this.mountedIdSet.add(row.id)
+      this.stats.mounts++
+    }
+    this.rows.splice(start, 0, ...rows)
+  }
+
+  private applyMount(id: Id, lod: L): void {
+    const row = this.buildMountRow(id, lod)
+    if (row) this.commitMountRows([row])
   }
 
   private applyUnmount(id: Id): void {
-    const index = this.rowIds.indexOf(id)
+    const index = this.rowIndexOf(id)
     if (index < 0) return
     this.rows.splice(index, 1)
     this.rowIds.splice(index, 1)
+    this.rowIndexHint.delete(id)
     this.mounted.delete(id)
     this.mountedIdSet.delete(id)
     this.stats.unmounts++
   }
 
   private applyReplace(id: Id, lod: L): void {
-    const index = this.rowIds.indexOf(id)
+    const index = this.rowIndexOf(id)
     if (index < 0) return
     const row: WindowedRow<T, Id, L> = { id, item: this.options.resolve(id), lod }
     this.rows.splice(index, 1, row)
+    this.rowIndexHint.set(id, index)
     this.mounted.set(id, lod)
     this.stats.replaces++
   }
@@ -347,6 +414,9 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.pendingReplaces = []
     this.pendingMounts = []
     this.pendingUnmounts = []
+    this.replaceCursor = 0
+    this.mountCursor = 0
+    this.unmountCursor = 0
     this.rows.destroy()
   }
 }
