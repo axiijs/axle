@@ -67,17 +67,23 @@ describe('BindingEffect', () => {
   it('detachFromCreationContext removes the effect from the parent effect children', () => {
     const value = atom(0)
     let child: BindingEffect | null = null
+    let sibling: BindingEffect | null = null
     const rerun = atom(0)
     const parent = new BindingEffect(() => {
       rerun()
       if (!child) {
+        // 先创建 child、再创建 sibling，然后摘除 child：
+        // 覆盖「被摘除的不是 children 末尾元素」的 swap 路径
         child = new BindingEffect(() => value())
+        sibling = new BindingEffect(() => value())
         child.detachFromCreationContext()
         child.run()
+        sibling.run()
       }
     })
     parent.run()
     expect(child).not.toBeNull()
+    expect(sibling).not.toBeNull()
 
     // 父 effect 重跑会 destroyChildren；已摘除的 child 必须存活
     rerun(1)
