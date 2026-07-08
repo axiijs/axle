@@ -135,7 +135,31 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
     layer.destroy()
   })
 
-  it('invalidates the union of old+new bounds on pure data changes (失效机制接线)', () => {
+  /** 断言矩形列表完整覆盖某个区域（外扩 1px 的失效契约） */
+  function coveredBy(regions: IndexBounds[], target: IndexBounds): boolean {
+    return regions.some(
+      (region) =>
+        region.x <= target.x &&
+        region.y <= target.y &&
+        region.x + region.width >= target.x + target.width &&
+        region.y + region.height >= target.y + target.height,
+    )
+  }
+
+  function mountFakeLeafer(layer: { ui: ReturnType<typeof createDotLayer>['ui'] }) {
+    const forceRender = vi.fn()
+    ;(layer.ui as unknown as { leafer: unknown }).leafer = { forceRender }
+    Object.assign(layer.ui.__world as unknown as Record<string, number>, {
+      a: 1,
+      d: 1,
+      e: CONTENT.x,
+      f: CONTENT.y,
+    })
+    const regions = () => forceRender.mock.calls.map((call) => call[0] as IndexBounds)
+    return { forceRender, regions }
+  }
+
+  it('invalidates old+new bounds of pure data changes with rAF merging (失效机制接线)', () => {
     const index = new SpatialIndex<number>({ cellSize: 100 })
     index.set(1, { x: 0, y: 0, width: 100, height: 100 })
 
@@ -150,32 +174,95 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
         }
       },
     })
-    // 模拟挂载状态：注入假 leafer 与世界矩阵（identity + contentBounds 平移）
-    const forceRender = vi.fn()
-    ;(layer.ui as unknown as { leafer: unknown }).leafer = { forceRender }
-    Object.assign(layer.ui.__world as unknown as Record<string, number>, {
-      a: 1,
-      d: 1,
-      e: CONTENT.x,
-      f: CONTENT.y,
-    })
+    const { forceRender, regions } = mountFakeLeafer(layer)
 
     // 程序化移动一个（可能未挂载的）条目：纯数据变更，没有任何 leafer 属性变化
     index.set(1, { x: 300, y: 0, width: 100, height: 100 })
     expect(frameCallback).not.toBeNull() // 已安排 rAF 合并
     expect(forceRender).not.toHaveBeenCalled()
 
-    // 同一帧内的第二次变更合并
+    // 同一帧内的第二次变更合并到同一次 rAF 失效
     index.set(1, { x: 300, y: 200, width: 100, height: 100 })
     frameCallback!()
 
-    expect(forceRender).toHaveBeenCalledTimes(1)
-    const region = forceRender.mock.calls[0]![0] as IndexBounds
-    // 并集覆盖 旧(0,0,100x100) ∪ 中(300,0) ∪ 新(300,200,100x100)，外扩 1px
-    expect(region.x).toBeLessThanOrEqual(-1)
-    expect(region.y).toBeLessThanOrEqual(-1)
-    expect(region.x + region.width).toBeGreaterThanOrEqual(401)
-    expect(region.y + region.height).toBeGreaterThanOrEqual(301)
+    // 三个位置（旧/中/新）全部被失效覆盖，且相交的自动合并（中与新共享 300 列时合并）
+    const flushed = regions()
+    expect(flushed.length).toBeGreaterThanOrEqual(1)
+    expect(flushed.length).toBeLessThanOrEqual(3)
+    for (const target of [
+      { x: 0, y: 0, width: 100, height: 100 },
+      { x: 300, y: 0, width: 100, height: 100 },
+      { x: 300, y: 200, width: 100, height: 100 },
+    ]) {
+      expect(coveredBy(flushed, target)).toBe(true)
+    }
+    layer.destroy()
+  })
+
+  it('keeps far-apart same-frame changes as separate dirty rects (协同场景不撑成整层)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    index.set(1, { x: 0, y: 0, width: 100, height: 100 })
+    index.set(2, { x: 3000, y: 3000, width: 100, height: 100 })
+
+    let frameCallback: (() => void) | null = null
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      schedule: (callback) => {
+        frameCallback = callback
+        return () => {
+          frameCallback = null
+        }
+      },
+    })
+    const { regions } = mountFakeLeafer(layer)
+
+    // 两个相距很远的条目在同一帧变更（协同远程移动的典型形态）
+    index.set(1, { x: 50, y: 0, width: 100, height: 100 })
+    index.set(2, { x: 3050, y: 3000, width: 100, height: 100 })
+    frameCallback!()
+
+    const flushed = regions()
+    // 不允许合并成覆盖两端的巨型并集：每个失效矩形都远小于两端跨度
+    for (const region of flushed) {
+      expect(region.width).toBeLessThan(1000)
+      expect(region.height).toBeLessThan(1000)
+    }
+    expect(coveredBy(flushed, { x: 0, y: 0, width: 150, height: 100 })).toBe(true)
+    expect(coveredBy(flushed, { x: 3000, y: 3000, width: 150, height: 100 })).toBe(true)
+    layer.destroy()
+  })
+
+  it('overflowing dirty rects merge without losing coverage (脏区上限的正确性)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    let frameCallback: (() => void) | null = null
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      schedule: (callback) => {
+        frameCallback = callback
+        return () => {
+          frameCallback = null
+        }
+      },
+    })
+    const { regions } = mountFakeLeafer(layer)
+
+    // 同一帧插入 20 个分散条目，超过脏区数量上限（8）
+    const targets: IndexBounds[] = []
+    for (let i = 0; i < 20; i++) {
+      const bounds = { x: (i % 5) * 700, y: Math.floor(i / 5) * 700, width: 50, height: 50 }
+      targets.push(bounds)
+      index.set(100 + i, bounds)
+    }
+    frameCallback!()
+
+    const flushed = regions()
+    expect(flushed.length).toBeLessThanOrEqual(8)
+    // 每个变更区域都仍被某个失效矩形覆盖
+    for (const target of targets) {
+      expect(coveredBy(flushed, target)).toBe(true)
+    }
     layer.destroy()
   })
 
