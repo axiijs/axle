@@ -146,6 +146,7 @@ export class RxUIPosition extends RxLeaferState<IUI, IPointData> {
  */
 export class RxViewportInteracting extends RxLeaferState<ILeaferBase, boolean> {
   private timer: ReturnType<typeof setTimeout> | null = null
+  private lastGestureAt = 0
   constructor(
     public debounceMs = 150,
     value?: Atom<boolean | null>,
@@ -154,13 +155,22 @@ export class RxViewportInteracting extends RxLeaferState<ILeaferBase, boolean> {
   }
   listen(): void {
     const leafer = this.target!
-    const onGesture = () => {
-      if (this.value.raw !== true) this.value(true)
-      if (this.timer) clearTimeout(this.timer)
-      this.timer = setTimeout(() => {
-        this.timer = null
+    // 惰性单定时器：手势事件逐帧到达，clearTimeout + setTimeout 每帧一对的
+    // 定时器churn没有必要——事件只记录时间戳，到点检查最后手势时刻，
+    // 未静止够久则按剩余时间再挂一次。
+    const settle = () => {
+      this.timer = null
+      const remaining = this.lastGestureAt + this.debounceMs - Date.now()
+      if (remaining > 0) {
+        this.timer = setTimeout(settle, remaining)
+      } else {
         this.value(false)
-      }, this.debounceMs)
+      }
+    }
+    const onGesture = () => {
+      this.lastGestureAt = Date.now()
+      if (this.value.raw !== true) this.value(true)
+      if (!this.timer) this.timer = setTimeout(settle, this.debounceMs)
     }
     const types = [MoveEvent.START, MoveEvent.MOVE, ZoomEvent.START, ZoomEvent.ZOOM]
     for (const type of types) leafer.on(type, onGesture)
