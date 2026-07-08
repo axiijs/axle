@@ -214,18 +214,23 @@ function portPos(card: CardModel, side: Side): { x: number; y: number } {
   return { x: pos.x + local.x, y: pos.y + local.y }
 }
 
+/**
+ * 连线 path 用 leafer 路径命令数组（1 = M，5 = C）而不是 SVG 字符串：
+ * 拖拽帧上每条关联连线都要重算 path，字符串形式的「模板拼接 + 引擎逐字符
+ * 解析」是纯浪费；命令数组直接进渲染管线（§5 配方）。
+ */
 function wirePath(
   p1: { x: number; y: number },
   s1: Side,
   p2: { x: number; y: number },
   s2: Side,
-): string {
+): number[] {
   const d = Math.min(160, Math.max(48, Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2))
   const c1x = p1.x + DIR[s1].x * d
   const c1y = p1.y + DIR[s1].y * d
   const c2x = p2.x + DIR[s2].x * d
   const c2y = p2.y + DIR[s2].y * d
-  return `M ${p1.x} ${p1.y} C ${c1x} ${c1y} ${c2x} ${c2y} ${p2.x} ${p2.y}`
+  return [1, p1.x, p1.y, 5, c1x, c1y, c2x, c2y, p2.x, p2.y]
 }
 
 /** 连线包围盒：两端 port 点 + 贝塞尔控制点合成，O(1)（§5） */
