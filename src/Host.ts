@@ -21,7 +21,12 @@ export interface Host {
    *   自己只需要清理绑定（effect / ref / 回调），不要碰场景图。
    */
   destroy(parentHandle?: boolean): void
-  /** 该 host 当前在父 branch 里的全部顶层节点（含常驻占位符），顺序与场景图一致 */
+  /**
+   * 该 host 当前在父 branch 里的全部顶层节点（含常驻占位符），顺序与场景图一致。
+   * CAUTION 已知例外（doc/02 §3.1 附注）：leafer 的 zIndex 会对父分支 children
+   *  物理重排，此时 getNodes() 顺序与场景图实际顺序可以不一致（集合必须一致）；
+   *  簿记按引用、锚点下标实时取，绑定 zIndex 的列表禁止 reorder patch。
+   */
   getNodes(): IUI[]
   /** 区间的第一个节点，用作「插入到该 host 之前」的锚点 */
   readonly firstNode: IUI

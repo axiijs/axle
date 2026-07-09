@@ -41,6 +41,17 @@ type AxleNode = {
 3. **响应式值**（`isAtom(value)` 或 `typeof value === 'function'`）：为该属性创建一个
    `LightBindingEffect`，立即执行一次并在依赖变化时同步重跑：`ui[key] = unwrap(value)`。
    数组值中含响应式项时同样走绑定（逐项 unwrap 后整体赋值）。
+   - **先簿记后运行**（与 childHosts「先 push 再 render」同一范式）：effect 必须先进
+     `attrEffects` 再首次 `run()`。初始求值抛错时依赖已被追踪，若 effect 不在簿记里，
+     渲染事务的回滚（destroy）够不到它——泄漏成继续响应依赖的活效应，之后对该依赖的
+     每次写入都会把异常抛进 data0 的 trigger session（击穿 `runSimplePatch`，整个
+     依赖图区域瘫痪）。这是与 axii `StaticHost.collectReactiveAttr`（先 run 后 push）
+     的**有意差异**，axii 存在同样的泄漏窗口。
+   - **「初次渲染」的判定依据是调用栈**（初始 `run()` 是否已返回），与「首次求值是否
+     成功」解耦：error 钩子消费掉初始错误后，后续更新已运行在 trigger session 里，
+     即使该绑定从未成功求值过，更新错误也必须降级为 `console.error` + 跳过
+     （若按「首次成功」判定，钩子中途注销时更新错误会从 model 写入点向上抛）。
+     `AtomHost.rendered` / `FunctionHost.rendered` 同一语义。
 4. **静态值**：直接进构造数据 `UICreator.get(tag, data)`。
 
 事件绑定是一次性的、**不响应式**（与 axii 相同的设计取舍）。
@@ -133,6 +144,10 @@ interface Host {
 
 - `ElementHost` / `PrimitiveHost` / `AtomHost` / `RawUIHost`：内容节点本身稳定，
   render 完成后**立刻移除占位符**，`getNodes()` 只含内容节点。
+  **占位符消费不掉时的兜底**：render 中途抛错（属性初始求值 / children 渲染失败）
+  会留下未消费的占位符，非 parentHandle 的销毁路径（如初次渲染失败后的
+  `root.destroy()`）必须清掉它，否则成为永久孤儿节点（parentHandle 路径由祖先
+  整体销毁 / 渲染事务的区间回滚覆盖）。
 - `EmptyHost` / `FunctionHost` / `StaticArrayHost` / `RxListHost`：
   区间结构可变（或可能为空），占位符**常驻**，作为 `getNodes()` 的最后一个节点。
 - `ComponentHost`：组件只执行一次，区间完全由 innerHost 决定（结构可变的
@@ -166,7 +181,12 @@ interface Host {
 EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 
 - **splice**：新行创建 Host 后插入到「插入点之后第一个已渲染行的 firstNode」之前
-  （找不到则 list 占位符之前）；被删行逐个 destroy。**行销毁错误就地隔离**
+  （找不到则 list 占位符之前）；被删行逐个 destroy。**start 参数按
+  `Array.prototype.splice` 的 ToIntegerOrInfinity + clamp 语义完整归一化**：data0
+  透传未归一化的 argv，负数、非有限值（`undefined` / `NaN`，典型来源是
+  `list.splice(map.get(id), 1)` 的 get miss）、小数都会原样到达；`hosts.splice`
+  内部按 JS 语义自行归一而 `findAnchor` 的下标循环不会，归一化不完整会让簿记与
+  场景图**顺序永久失步**（且集合级自检发现不了）。**行销毁错误就地隔离**
   （`destroyRowHost`）：行销毁运行在 data0 patch 里，向上抛会中断同批兄弟行的销毁并
   触发 rebuildAllRows——而被删行已从簿记里 splice 出去，rebuild 够不到，未销毁的节点
   将成为永久孤儿。销毁抛错时报告错误（error 钩子 / console.error）并对该行残留的
@@ -189,9 +209,15 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 由 splice/destroy 显式完成。
 
 **开发期不变量自检**（`setListDiagnostics(true)`，对齐 axii 的 assertListInvariants）：
-每个 patch 批次后校验「簿记与数据等长且无 hole、每行首节点与占位符同在列表 branch 里」
-（zIndex 物理重排只改顺序不改集合，所以只校验集合级一致性）。失败走 error 钩子并
-`rebuildAllRows` 自愈。生产默认关闭，正常路径只多一次布尔检查。
+每个 patch 批次后校验：
+
+- **集合级**：簿记与数据等长且无 hole、每行首节点与占位符同在列表 branch 里；
+- **顺序级**：分支内没有任何 zIndex 参与排序时，行首节点的物理顺序必须与簿记顺序
+  一致、占位符在所有行之后。zIndex 物理重排例外（§3.1 附注）只豁免「场景图物理
+  顺序」，簿记与数据的对应关系仍必须成立；不校验这一层，splice 锚点错位一类的
+  顺序失步只会以视觉错乱出现、无法定位。带 zIndex 的分支跳过顺序级校验。
+
+失败走 error 钩子并 `rebuildAllRows` 自愈。生产默认关闭，正常路径只多一次布尔检查。
 
 ### 3.4 ComponentHost
 
@@ -276,4 +302,12 @@ root.destroy()
 - 断言直接读 Leafer 场景图（`children` / 属性值），事件用 `ui.emit(type, ...)` 触发。
 - 覆盖每个 Host 的：初次渲染、更新（含批量 / 微任务时序）、销毁（绑定清理、节点移除）、
   嵌套组合（组件里嵌列表、列表行是组件 / 函数 / atom 等）。
+- **错误路径要反向断言「无残留」而不只是「降级正确」**（`error-path-invariants.test`）：
+  事务回滚后写旧依赖必须零求值、不抛出（没有仍订阅依赖的活 effect）；初次渲染失败 +
+  `root.destroy()` 后容器必须为空（无孤儿占位符）。降级结果正确但留下活效应/孤儿
+  节点的 bug，结果导向的断言全部检不出来。
+- **不变量 fuzz 层**（`fuzz-invariants.test`，种子固定可复现）：example-based 测试
+  只覆盖枚举到的输入，随机操作序列 + 全局不变量（场景图顺序 === 数据顺序、窗口化
+  簿记收敛）负责兜住整个输入域（负数/非有限值/小数下标、任意 patch 交错）。
+  新增结构操作路径时必须把该操作加进 fuzz 的操作集。
 - 目标：语句覆盖率 ≥ 95%，新增代码的分支全覆盖。
