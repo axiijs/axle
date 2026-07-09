@@ -121,6 +121,42 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('buffer / hysteresis getter 的响应式依赖是重算触发源（与视口/档位同级）', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    index.set(1, { x: 180, y: 10, width: 20, height: 20 })
+    const buffer = atom(0)
+    const hysteresis = atom(2)
+    const scheduler = manualScheduler()
+    const windowed = new RxWindowedList<{ id: number }, number, string>({
+      index,
+      resolve: (id) => ({ id }),
+      viewRect: () => ({ x: 0, y: 0, width: 100, height: 100 }),
+      buffer: () => buffer(),
+      hysteresis: () => hysteresis(),
+      schedule: scheduler.schedule.bind(scheduler),
+      now: () => 0,
+    })
+    // buffer 0：进入窗口 [0,100]，卡片（x=180）在窗口外
+    scheduler.settle()
+    expect(windowed.mountedIds.has(1)).toBe(false)
+
+    // 扩大 buffer → 进入窗口 [-100,200]：仅凭 buffer atom 的写入必须触发重算并挂载
+    buffer(1)
+    scheduler.settle()
+    expect(windowed.mountedIds.has(1)).toBe(true)
+
+    // 收窄 buffer：卡片滑出进入窗口但仍在保留窗口 [-200,300]（hysteresis 2）内 → 不卸载
+    buffer(0)
+    scheduler.settle()
+    expect(windowed.mountedIds.has(1)).toBe(true)
+
+    // 收窄 hysteresis → 保留窗口回到 [0,100]：仅凭 hysteresis atom 的写入必须触发卸载
+    hysteresis(0)
+    scheduler.settle()
+    expect(windowed.mountedIds.has(1)).toBe(false)
+    windowed.destroy()
+  })
+
   it('index change (trigger 3): a card created in-view mounts; a deleted one unmounts', () => {
     const { index, addCard, scheduler, windowed, mountedIds } = setup()
     scheduler.settle()

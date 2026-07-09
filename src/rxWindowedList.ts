@@ -54,10 +54,11 @@ export type RxWindowedListOptions<T, Id, L extends string> = {
   pinnedLodWhenUnmounted?: L | undefined
   /**
    * 视口外扩比例（进入阈值），默认 0.75。可给 getter 按档位动态调整
-   * （低档位视口内条目数大，缓冲区应收窄以压住场景图节点数）
+   * （低档位视口内条目数大，缓冲区应收窄以压住场景图节点数）。
+   * getter 的响应式依赖被追踪：依赖变化触发全量重算（与视口/档位同级的触发源）
    */
   buffer?: number | (() => number) | undefined
-  /** 滞后带：移出 buffer + hysteresis 才卸载，默认 0.25 */
+  /** 滞后带：移出 buffer + hysteresis 才卸载，默认 0.25。getter 依赖同样被追踪 */
   hysteresis?: number | (() => number) | undefined
   /** 强制保活的 id 集合（响应式 getter，重算触发源 4） */
   pins?: (() => Iterable<Id>) | undefined
@@ -161,12 +162,19 @@ export class RxWindowedList<T, Id, L extends string = string> {
 
     // 触发源 3：索引 write-through 变更通知（同帧合并，走增量判定）
     this.unsubscribeIndex = options.index.subscribe((change) => this.invalidateEntry(change.id))
-    // 触发源 1/2/4 + interacting 翻转：autorun 追踪全部响应式输入
+    // 触发源 1/2/4 + interacting 翻转：autorun 追踪全部响应式输入。
+    // buffer / hysteresis getter 也在追踪集内：它们决定窗口本身（enterRect /
+    // keepRect），getter 若依赖档位之外的响应式输入（如设置项 atom），写入后
+    // 必须触发全量重算——只在 recompute 里读会漏掉这类触发（recompute 运行在
+    // rAF 回调里，不被任何 effect 追踪）。静态 number 经 toGetter 包装后
+    // 读取无依赖，零额外追踪成本。
     this.stopAutorun = autorun(() => {
       options.viewRect()
       options.lod?.()
       options.mounted?.()
       options.interacting?.()
+      this.buffer()
+      this.hysteresis()
       if (options.pins) for (const _ of options.pins()) void _
       this.invalidate()
     }, true)
