@@ -60,6 +60,9 @@ export function insertBefore(node: IUI, anchor: IUI): void {
   // 通常就是最后一个 child——先查尾部避免整条 children 的线性扫描。
   const last = children.length - 1
   let anchorIndex = children[last] === anchor ? last : children.indexOf(anchor)
+  // CAUTION 锚点必须真实存在于父级 children 里。leafer 的 add(child, -1) 会被
+  //  splice(-1, 0) 解释为「插到倒数第二位」，簿记失配会静默扩散，必须响亮失败。
+  assert(anchorIndex >= 0, 'insertBefore anchor is not a child of its parent')
   // CAUTION Leafer 的 addBefore 先取 before 的下标再 remove child，
   //  同父前向搬移时下标会右偏一位，这里自己修正后用 add(child, index)。
   if (node.parent === parent) {

@@ -103,6 +103,80 @@ describe('RxListHost splice', () => {
   })
 })
 
+describe('RxListHost splice index normalization（原生 splice 语义）', () => {
+  // data0 的 splice 委托原生 Array.prototype.splice，负 start / 越界 start
+  // 都是合法输入，patch 里拿到的是未归一化的原始 argv。
+
+  it('splice(-1, 0, x) inserts before the last row', () => {
+    const items = new RxList(['a', 'b', 'c'])
+    const { group } = listGroup(items)
+    items.splice(-1, 0, 'x')
+    expect(items.data).toEqual(['a', 'b', 'x', 'c'])
+    expect(rowTexts(group)).toEqual(['a', 'b', 'x', 'c'])
+  })
+
+  it('splice(-2, 1) deletes the second-to-last row', () => {
+    const items = new RxList(['a', 'b', 'c'])
+    const { group } = listGroup(items)
+    items.splice(-2, 1)
+    expect(items.data).toEqual(['a', 'c'])
+    expect(rowTexts(group)).toEqual(['a', 'c'])
+  })
+
+  it('splice(-1, 1, x, y) replaces the last row with two rows', () => {
+    const items = new RxList(['a', 'b'])
+    const { group } = listGroup(items)
+    items.splice(-1, 1, 'x', 'y')
+    expect(items.data).toEqual(['a', 'x', 'y'])
+    expect(rowTexts(group)).toEqual(['a', 'x', 'y'])
+  })
+
+  it('negative start beyond -length clamps to 0', () => {
+    const items = new RxList(['a', 'b'])
+    const { group } = listGroup(items)
+    items.splice(-99, 0, 'x')
+    expect(items.data).toEqual(['x', 'a', 'b'])
+    expect(rowTexts(group)).toEqual(['x', 'a', 'b'])
+  })
+
+  it('start beyond length clamps to length (appends)', () => {
+    const items = new RxList(['a'])
+    const { group } = listGroup(items)
+    items.splice(99, 0, 'x')
+    expect(items.data).toEqual(['a', 'x'])
+    expect(rowTexts(group)).toEqual(['a', 'x'])
+  })
+
+  it('pop() on an empty list is a silent no-op (no error, no bookkeeping damage)', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const items = new RxList<string>([])
+      const { group } = listGroup(items)
+      items.pop()
+      expect(consoleError).not.toHaveBeenCalled()
+      expect(rowTexts(group)).toEqual([])
+      // 之后的 patch 照常工作
+      items.push('a')
+      expect(rowTexts(group)).toEqual(['a'])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('shift() on an empty list is a silent no-op', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const items = new RxList<string>([])
+      const { group } = listGroup(items)
+      items.shift()
+      expect(consoleError).not.toHaveBeenCalled()
+      expect(rowTexts(group)).toEqual([])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
 describe('RxListHost explicit key change', () => {
   it('set() replaces a single row', () => {
     const items = new RxList(['a', 'b', 'c'])

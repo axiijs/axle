@@ -105,6 +105,18 @@ describe('insertBefore', () => {
       'cannot insert before a detached anchor',
     )
   })
+
+  it('throws loudly when the anchor is not in its parent children (corrupted bookkeeping)', () => {
+    // leafer 的 add(child, -1) 会被 splice(-1, 0) 解释为「插到倒数第二位」，
+    // 静默错位比抛错更危险，这里必须响亮失败。
+    const parent = new Group()
+    parent.add(named('a') as never)
+    const anchor = named('phantom')
+    ;(anchor as unknown as { parent: unknown }).parent = parent
+    expect(() => insertBefore(named('x'), anchor)).toThrow(
+      'insertBefore anchor is not a child of its parent',
+    )
+  })
 })
 
 describe('destroyNode', () => {
