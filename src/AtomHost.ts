@@ -22,6 +22,8 @@ export function stringValue(v: unknown): string {
  */
 export class AtomHost extends BindingEffect implements Host {
   textUI?: IText
+  /** 初始求值是否已成功完成（区分「render 抛错」与「更新抛错」的错误策略） */
+  rendered = false
   constructor(
     public source: Atom<unknown>,
     public placeholder: IUI,
@@ -40,11 +42,18 @@ export class AtomHost extends BindingEffect implements Host {
   // BindingEffect 触发时的回调（原型方法，替代构造器闭包）
   update(): void {
     // CAUTION 文本更新抛错（如用户对象的 toString 抛错）：外部通过 root.on('error')
-    //  注册了处理器时报告错误并跳过本次更新，否则保持向上抛出。
+    //  注册了处理器时报告错误并跳过本次更新。未注册处理器时只有初始求值
+    //  （用户主动的 render 调用栈上）保持向上抛；后续更新运行在 data0 的
+    //  trigger session 里，向上抛会让异常从任意 model 写入点冒出来、并中断
+    //  同一 session 里其余绑定的本次更新，所以降级为 console.error + 跳过
+    //  （effect 保持活跃，依赖恢复后继续更新），与 RxList 行错误的契约一致。
     try {
       this.textUI!.text = stringValue(this.source())
+      this.rendered = true
     } catch (e) {
-      if (!this.pathContext.root.dispatch('error', e)) throw e
+      if (this.pathContext.root.dispatch('error', e)) return
+      if (!this.rendered) throw e
+      console.error('[axle] atom text update failed, keeping the previous text:', e)
     }
   }
   render(): void {

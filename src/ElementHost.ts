@@ -160,15 +160,22 @@ export class ElementHost implements Host {
       const attrEffects: BindingEffect[] = (this.attrEffects = [])
       const target = ui as unknown as Record<string, unknown>
       for (const [key, value] of reactiveProps) {
+        // CAUTION 属性更新抛错：外部通过 root.on('error') 注册了处理器时报告
+        //  错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），与
+        //  ComponentHost/FunctionHost 的错误钩子语义一致（对齐 axii 的同名修复）。
+        //  未注册处理器时只有初始求值（用户主动的 render 调用栈上）保持向上抛；
+        //  后续更新运行在 data0 的 trigger session 里，向上抛会让异常从任意
+        //  model 写入点冒出来、并中断同一 session 里其余绑定的本次更新，
+        //  所以降级为 console.error + 跳过，与 RxList 行错误的契约一致。
+        let rendered = false
         const effect = new BindingEffect(() => {
-          // CAUTION 属性更新（含初始求值）抛错：外部通过 root.on('error') 注册了
-          //  处理器时报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续
-          //  更新），否则保持向上抛出。与 ComponentHost/FunctionHost 的错误钩子
-          //  语义一致（对齐 axii 的同名修复）。
           try {
             target[key] = Array.isArray(value) ? value.map(evaluate) : evaluate(value)
+            rendered = true
           } catch (e) {
-            if (!this.pathContext.root.dispatch('error', e)) throw e
+            if (this.pathContext.root.dispatch('error', e)) return
+            if (!rendered) throw e
+            console.error(`[axle] reactive prop "${key}" update failed, skipping this update:`, e)
           }
         })
         effect.run()
