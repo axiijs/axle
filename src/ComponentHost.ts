@@ -5,7 +5,7 @@ import type { Host, PathContext } from './Host.js'
 import { linkHost } from './Host.js'
 import { createHost } from './createHost.js'
 import { attachRef, detachRef } from './ElementHost.js'
-import { createPlaceholder, destroyNode, insertBefore } from './leafer.js'
+import { createPlaceholder, destroyNode, insertBefore, isAttachedTo } from './leafer.js'
 import type { Component, EffectHandle, Props, RefObject, RefProp, RenderContext } from './types.js'
 
 /**
@@ -113,8 +113,23 @@ export class ComponentHost implements Host {
     })
 
     if (this.pathContext.root.attached) {
-      // root 已 attach 的动态生成节点，直接执行 layoutEffect
-      this.runLayoutEffect()
+      if (!this.layoutEffects && !this.refProp) {
+        // 没有 layoutEffect 也没有组件 ref：什么都不用做。
+        // 这是虚拟化滚动高频挂载的主路径，保持零额外开销（不做连通检查）。
+      } else if (isAttachedTo(this.firstNode, this.pathContext.root.container)) {
+        // 子树已连通（列表行 / 函数区域的顶层组件走这里）：立即执行
+        this.runLayoutEffect()
+      } else {
+        // 组件渲染在脱离场景图的子树里（元素 children 先渲染、后插入的路径）：
+        // 延迟到子树连通 root.container 后再执行，保证 layoutEffect / 组件 ref
+        // 执行时拿得到场景图信息（ui.leafer / 世界坐标等）。
+        // 一定要保存取消函数：组件若在连通前被销毁（如所在渲染事务回滚），
+        // 必须取消，否则连通后会对已销毁的组件执行 layoutEffect / ref。
+        this.removeAttachListener = this.pathContext.root.deferAttached(
+          this,
+          this.runLayoutEffect,
+        )
+      }
     } else {
       // 一定要保存退订函数：组件若在 root attach 之前被销毁，必须退订，
       // 否则 attach 时会对已销毁的组件执行 layoutEffect / ref。

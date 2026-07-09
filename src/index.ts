@@ -23,7 +23,7 @@ export type {
 
 export type { Host, PathContext } from './Host.js'
 
-export { EVENT_PROP_TO_TYPE, createPlaceholder, isPlaceholder } from './leafer.js'
+export { EVENT_PROP_TO_TYPE, createPlaceholder, isPlaceholder, isAttachedTo } from './leafer.js'
 
 export { BindingEffect, DeferredBindingEffect } from './BindingEffect.js'
 

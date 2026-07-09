@@ -192,6 +192,12 @@ export class ElementHost implements Host {
       insertBefore(ui, this.placeholder)
       destroyNode(this.placeholder)
       this.placeholder = null
+      // 本节点的 children 是在脱离场景图的状态下渲染的（先 children 后插入），
+      // 其中的组件若在等待连通后执行 layoutEffect / ref，在此 flush。
+      // 队列为空（绝大多数挂载）时只是一次长度检查。
+      // staticParent 路径不 flush：静态 child 插入时父元素自身仍未接入场景图，
+      // 由最外层走占位符路径的祖先统一 flush。
+      this.pathContext.root.flushAttachQueue()
     } else {
       assert(this.staticParent, 'ElementHost requires either a placeholder or a static parent')
       this.staticParent.add(ui)
