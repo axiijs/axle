@@ -281,4 +281,33 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
     expect(() => frameCallback!()).not.toThrow()
     layer.destroy()
   })
+
+  it('retains dirty rects while detached and flushes them after mount (脏区不能默默丢弃)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    let frameCallback: (() => void) | null = null
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      schedule: (callback) => {
+        frameCallback = callback
+        return () => {
+          frameCallback = null
+        }
+      },
+    })
+
+    // 未挂载期间的纯数据变更：失效执行但 leafer 缺席，脏区必须保留
+    index.set(1, { x: 0, y: 0, width: 100, height: 100 })
+    frameCallback!()
+
+    // 挂载后另一个远处条目变更：滞留脏区随本次失效一并刷出
+    const { regions } = mountFakeLeafer(layer)
+    index.set(2, { x: 3000, y: 3000, width: 100, height: 100 })
+    frameCallback!()
+
+    const flushed = regions()
+    expect(coveredBy(flushed, { x: 0, y: 0, width: 100, height: 100 })).toBe(true)
+    expect(coveredBy(flushed, { x: 3000, y: 3000, width: 100, height: 100 })).toBe(true)
+    layer.destroy()
+  })
 })
