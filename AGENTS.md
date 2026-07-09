@@ -42,6 +42,10 @@ npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199
 - 未注册钩子：**初次渲染**（用户 render 调用栈上）保持向上抛；**后续更新**运行在微任务 /
   data0 trigger session 里，向上抛只会变成 uncaught exception / unhandled rejection，
   一律降级为 `console.error` + 跳过；
+- **生命周期回调也在契约内**：effect/layoutEffect 抛错走钩子（兄弟回调照常执行、已渲染
+  区域不回滚）；**清理回调**（onCleanup/effect 清理等）抛错绝不向上抛（`runCleanupIsolated`，
+  单行清理错误不允许升级成整列表 rebuild）；**error 钩子自身抛错**由 dispatch 就地隔离
+  （冒出去会击穿 data0 的 runSimplePatch 把 computed 永久卡死）；
 - **渲染必须事务化**：失败时回滚已插入场景图的节点（`RxListHost.createRowHost`、
   `FunctionHost.renderSource` 的 `(boundary, placeholder)` 区间回滚是范式），绝不留孤儿节点；
 - **簿记与场景图绝不允许持久失步**：`RxListHost.hosts` 必须与 `source.data` 等长且无 hole；

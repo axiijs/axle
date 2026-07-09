@@ -171,11 +171,14 @@ export class DotLayer<Id> {
 
   /** 立即对累计的脏区做一次失效（测试 / 需要同步刷新的场景用） */
   invalidate(): void {
-    const rects = this.dirtyRects
-    if (!rects.length) return
-    this.dirtyRects = []
+    if (!this.dirtyRects.length) return
+    // 层未挂载（或临时被摘挂）时**保留**脏区：不能默默丢弃，否则期间的
+    // 协同/程序化变更区域在挂回后漏重绘。挂回后的下一次失效一并刷新
+    // （脏区上限 MAX_DIRTY_RECTS，滞留成本有界）。
     const leafer = this.ui.leafer
     if (!leafer) return
+    const rects = this.dirtyRects
+    this.dirtyRects = []
     // 页面坐标 → 局部 → 世界坐标（viewport 只有平移缩放，直接用世界矩阵换算）
     const world = this.ui.__world
     const offsetX = this.ui.x ?? 0

@@ -257,6 +257,10 @@ export class ElementHost implements Host {
     // 用户持有的 UI 实例必须在子树销毁前解挂，避免被连带销毁
     this.rawChildren?.forEach((raw) => raw.remove())
     detachRef(this.refProp)
-    if (!parentHandle && this.ui) destroyNode(this.ui)
+    // parentHandle 时也要销毁**脱离场景图**的 ui：渲染事务回滚（children 渲染
+    // 抛错）时 ui 尚未插入场景图，区间回滚够不到它，父级的整体销毁也不会
+    // 波及——不销毁则 leafer 资源（image 加载任务、事件表）泄漏。已入场景图
+    // 的正常 parentHandle 路径只多一次指针判空（祖先随后整体销毁）。
+    if (this.ui && (!parentHandle || !this.ui.parent)) destroyNode(this.ui)
   }
 }

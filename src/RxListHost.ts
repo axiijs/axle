@@ -275,6 +275,10 @@ export class RxListHost implements Host {
   handleExplicitKeyChange(index: number): void {
     const hosts = this.hosts!
     const data = this.source.data
+    // CAUTION data0 透传负 key：list.set(-1, v) 只是 data[-1] = v 的属性赋值，
+    //  不改变列表长度、不对应任何行——直接忽略，否则 hosts[-1] 会挂上
+    //  幽灵行并向场景图泄漏一个占位节点。正常路径只多一次整数比较。
+    if (index < 0) return
     // CAUTION 越界 set（list.set(i, v)，i >= 当前长度）的语义同 arr[i] = v：
     //  data 变长并出现稀疏空洞。簿记必须与数据保持等长且无 hole，否则后续
     //  patch 的 findAnchor / getNodes 会踩到 undefined（hosts[i]! 非空断言）、

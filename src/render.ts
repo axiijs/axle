@@ -81,8 +81,9 @@ export function createRoot(container: IUI): Root {
       }
       const savedCallback: EventCallback = options?.once
         ? (arg: unknown) => {
-            callback(arg)
+            // 先摘除再执行：回调抛错（或重入 dispatch）时 once 语义依然成立
             callbacks.delete(savedCallback)
+            callback(arg)
           }
         : callback
       callbacks.add(savedCallback)
@@ -93,6 +94,23 @@ export function createRoot(container: IUI): Root {
     dispatch(event: string, arg?: unknown) {
       const callbacks = eventCallbacks.get(event)
       if (!callbacks?.size) return false
+      if (event === 'error') {
+        // CAUTION error 钩子自身抛错必须就地隔离：dispatch('error') 经常在
+        //  data0 的 computed patch / trigger session 里被调用（行错误恢复、
+        //  patch 兜底），钩子的异常从这里冒出去会击穿 runSimplePatch
+        //  （data0 无 try/finally）把 computed 永久卡死——此后每次对该
+        //  RxList 的写入都同步抛 data0 断言，整个列表区域瘫痪。钩子抛错
+        //  仍视为「已消费」（返回 true）：把原错误继续抛回去会造成同样的
+        //  损毁，console.error 报告钩子自身的错误保持可观测。
+        callbacks.forEach((callback) => {
+          try {
+            callback(arg)
+          } catch (hookError) {
+            console.error('[axle] error hook itself threw, ignoring:', hookError)
+          }
+        })
+        return true
+      }
       callbacks.forEach((callback) => callback(arg))
       return true
     },
@@ -108,10 +126,20 @@ export function createRoot(container: IUI): Root {
       // 换出当前队列再执行：run 里可能挂载新内容、注册新的延迟条目
       const entries = attachQueue
       attachQueue = []
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]!
         if (entry.cancelled) continue
         if (isAttachedTo(entry.host.firstNode, container)) {
-          entry.run()
+          try {
+            entry.run()
+          } catch (e) {
+            // run（layoutEffect / 组件 ref）向上抛只发生在未注册 error 钩子的
+            // 降级模式（有钩子时 runLayoutEffect 已就地消化）。同批剩余条目
+            // 不能被连坐丢失：放回队列等下一个插入点，再把错误继续抛给
+            // 触发本次 flush 的渲染事务按无钩子契约处理。只在错误路径付费。
+            for (let j = i + 1; j < entries.length; j++) attachQueue.push(entries[j]!)
+            throw e
+          }
         } else {
           // 仍未连通（还在更外层的脱离子树里）：留到下一个插入点再试
           attachQueue.push(entry)

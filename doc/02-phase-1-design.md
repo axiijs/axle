@@ -174,6 +174,9 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
   子序列）求最小搬移集合，逐 host 把 `getNodes()` 区间 `addBefore` 到锚点前。
 - **explicit key change**（`list.set(i, v)`）：销毁旧行 Host，在正确锚点处重建。
   连续 set 时向后找第一个已渲染行作锚点。
+- **负下标 set**（`list.set(-1, v)`）：data0 透传负 key，语义只是 `data[-1] = v`
+  的属性赋值（不改变列表长度、不对应任何行），直接忽略——否则会产生幽灵行
+  簿记并向场景图泄漏占位节点。
 
 行 Host 的 effect 不注册为本 computed 的子 effect（`pauseCollectChild`），行的销毁
 由 splice/destroy 显式完成。
@@ -204,6 +207,17 @@ type RenderContext = {
   完全跳过该机制（虚拟化高频挂载主路径零额外开销）。
 - 渲染抛错时：若 root 注册了 `error` 监听（`root.on('error', cb)`）则报告并把该区域渲染为空，
   否则向上抛出（与 axii 相同）。
+- **生命周期回调的错误契约**（对齐 axii 的 `runWithErrorHook`）：
+  - `useEffect` / `useLayoutEffect` 回调抛错：有钩子时交给钩子——**兄弟回调照常执行、
+    已渲染的区域保持不动**（layoutEffect 的错误不允许把渲染成功的区域误当成渲染
+    失败回滚，也不允许打断同一次连通队列 flush 里其它组件的 layoutEffect / ref）；
+    无钩子时保持向上抛（初次渲染落在用户 render 调用栈上；行/区域挂载中由所在
+    渲染事务按无钩子契约降级）。
+  - **清理回调**（`onCleanup` / effect 清理 / layoutEffect 清理、函数 child 的
+    `onCleanup`）抛错：**绝不向上抛**——有钩子交给钩子、无钩子 `console.error`，
+    兄弟清理与剩余销毁流程必须走完。这是与 axii 的有意差异：清理经常运行在
+    data0 patch / 微任务里，向上抛会把单行的清理错误升级为整列表的
+    `rebuildAllRows`，并中断兄弟清理造成泄漏；且销毁没有可回滚的「事务」。
 
 ### 3.5 PathContext
 
@@ -226,6 +240,11 @@ root.destroy()
 - `render` 不可重入（再次 render 前必须 destroy），返回根 Host。
 - root 自带一个事件总线：`on(event, cb, { once? })` / `dispatch(event, arg?)`。
   `render` 完成后 dispatch `attach`；`destroy` 前 dispatch `detach`。
+- **`error` 钩子自身抛错必须就地隔离**：`dispatch('error')` 经常在 data0 的
+  computed patch / trigger session 里被调用，钩子的异常冒出去会击穿
+  `runSimplePatch`（data0 无 try/finally）把 computed 永久卡死——此后每次对该
+  RxList 的写入都同步抛 data0 断言。钩子抛错时 `console.error` 报告并**仍视为
+  已消费**（返回 true，区域照常降级）：把原错误继续抛回去会造成同样的损毁。
 - `destroy` 销毁整棵 Host 树（场景图上 axle 创建的节点全部移除），不销毁容器本身。
 
 ## 5. 非目标（Phase 1 明确不做）
