@@ -193,6 +193,98 @@ describe('FunctionHost error handling', () => {
     expect(container.children!.length).toBe(0)
   })
 
+  it('inner host render error rolls back, reports to the hook and can recover (no leak)', async () => {
+    // source() 求值成功、但返回结构的渲染抛错（非法 child）：
+    // 必须回滚已插入的占位符/半渲染节点，否则每次重试泄漏一个占位符。
+    const badChild: unknown = { notAValidChild: true }
+    const fail = atom(true)
+    const retry = atom(0)
+    const errors: unknown[] = []
+    const { createRoot } = await import('@axiijs/axle')
+    const { Group } = await import('leafer-ui')
+    const container = new Group()
+    const root = createRoot(container as never)
+    root.on('error', (e) => errors.push(e))
+    root.render(
+      <group>
+        {() => {
+          retry() // 让重试可以由外部触发
+          if (fail()) return <group>{badChild as never}</group>
+          return <rect />
+        }}
+      </group>,
+    )
+    expect(errors.length).toBe(1)
+    const group = contentChildren(container as never)[0]!
+    // 该区域渲染为空、无半渲染残留，场景图里只剩函数区域的常驻占位符
+    expect(contentChildren(group)).toEqual([])
+    expect(group.children!.length).toBe(1)
+
+    // 反复失败不能累积泄漏占位符/节点
+    retry(1)
+    await tick()
+    retry(2)
+    await tick()
+    expect(errors.length).toBe(3)
+    expect(group.children!.length).toBe(1)
+
+    // 依赖恢复后该区域可以恢复渲染
+    fail(false)
+    await tick()
+    expect(contentTags(group)).toEqual(['Rect'])
+    expect(group.children!.length).toBe(2)
+
+    // 恢复后再次失败同样回滚干净
+    fail(true)
+    await tick()
+    expect(errors.length).toBe(4)
+    expect(contentChildren(group)).toEqual([])
+    expect(group.children!.length).toBe(1)
+    root.destroy()
+  })
+
+  it('inner host render error without a hook throws upward after rollback (initial render)', () => {
+    const badChild: unknown = { notAValidChild: true }
+    expect(() =>
+      mount(<group>{() => <group>{badChild as never}</group>}</group>),
+    ).toThrow('unknown child type')
+  })
+
+  it('rollback never touches sibling nodes around the function region', async () => {
+    // 函数区域前后都有静态 sibling（boundary 非空的回滚路径）；
+    // createHost 直接抛错（返回值本身非法）与渲染中途抛错都要只回滚本区间。
+    const bad = atom(true)
+    const errors: unknown[] = []
+    const { createRoot } = await import('@axiijs/axle')
+    const { Group } = await import('leafer-ui')
+    const container = new Group()
+    const root = createRoot(container as never)
+    root.on('error', (e) => errors.push(e))
+    root.render(
+      <group>
+        <rect width={1} />
+        {() => (bad() ? ({ notAValidChild: true } as never) : <ellipse />)}
+        <rect width={2} />
+      </group>,
+    )
+    expect(errors.length).toBe(1)
+    const group = contentChildren(container as never)[0]!
+    // 相邻 rect 完好，函数区域为空
+    expect(contentTags(group)).toEqual(['Rect', 'Rect'])
+    const childCount = group.children!.length
+
+    // 反复失败不累积节点、不动相邻节点
+    bad(false)
+    await tick()
+    expect(contentTags(group)).toEqual(['Rect', 'Ellipse', 'Rect'])
+    bad(true)
+    await tick()
+    expect(errors.length).toBe(2)
+    expect(contentTags(group)).toEqual(['Rect', 'Rect'])
+    expect(group.children!.length).toBe(childCount)
+    root.destroy()
+  })
+
   it('destroy stops future recomputes', async () => {
     const count = atom(0)
     const spy = vi.fn(() => count())

@@ -108,6 +108,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
       this.textUI = null
     }
     this.destroyInnerHost()
+    // boundary（本区间的前界）与 placeholder（后界）都不属于本次渲染的产物，
+    // 渲染只会在两者之间插入节点，渲染期间两者都稳定，可用于失败回滚。
+    const parentChildren = this.placeholder.parent?.children
+    const anchorIndex = parentChildren ? parentChildren.indexOf(this.placeholder) : -1
+    const boundary = anchorIndex > 0 ? (parentChildren![anchorIndex - 1] as IUI) : null
     const innerPlaceholder = createPlaceholder('function node')
     insertBefore(innerPlaceholder, this.placeholder)
     // 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
@@ -116,16 +121,50 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     //  就可能被父 effect 收集，所以 pauseCollectChild 必须在 createHost 之前。
     Notifier.instance.pauseTracking()
     effect.pauseCollectChild()
+    let innerHost: Host | undefined
     try {
-      const innerHost = createHost(node, innerPlaceholder, {
+      innerHost = createHost(node, innerPlaceholder, {
         ...this.pathContext,
         hostPath: linkHost(this, this.pathContext.hostPath),
       })
       innerHost.render()
       this.innerHost = innerHost
+    } catch (e) {
+      // CAUTION 内部 host 渲染抛错（非法 child / 未知标签 / 无钩子组件抛错等）：
+      //  必须先回滚已进入场景图的节点（含 innerPlaceholder），否则每次依赖触发
+      //  重试都会泄漏一个占位符和一棵半渲染子树。回滚后该区域渲染为空、effect
+      //  保持活跃（依赖恢复后可重新渲染）。注册了 root error 钩子时报告错误，
+      //  否则保持向上抛出（初次渲染是同步调用，外层行级/根级守卫可接住）。
+      this.recoverFailedRender(innerHost, boundary)
+      if (!this.pathContext.root.dispatch('error', e)) throw e
     } finally {
       effect.resumeCollectChild()
       Notifier.instance.resetTracking()
+    }
+  }
+  /** 结构路径渲染失败的回滚：清理半渲染 host 的绑定并移除已插入的场景图节点 */
+  private recoverFailedRender(partialHost: Host | undefined, boundary: IUI | null): void {
+    // 1. 尽力清理半渲染 host 已建立的绑定/effect/ref（parentHandle 模式不碰场景图，
+    //    节点由下面的区间回滚整体移除）
+    if (partialHost) {
+      try {
+        partialHost.destroy(true)
+      } catch {
+        // 半渲染 host 的清理是尽力而为，剩余节点由区间回滚兜底
+      }
+    }
+    // 2. 回滚 (boundary, this.placeholder) 开区间内的全部顶层节点（innerPlaceholder
+    //    与半渲染内容都在其中）。boundary/placeholder 理论上都稳定；万一找不到
+    //    （区间被外部破坏），宁可跳过回滚也不能误删相邻区间的节点。
+    const parent = this.placeholder.parent
+    if (parent?.children) {
+      const endIndex = parent.children.indexOf(this.placeholder)
+      const boundaryIndex = boundary ? parent.children.indexOf(boundary) : -1
+      const startIndex = boundary ? (boundaryIndex >= 0 ? boundaryIndex + 1 : endIndex) : 0
+      if (endIndex > startIndex) {
+        const orphans = parent.children.slice(startIndex, endIndex) as IUI[]
+        for (const orphan of orphans) destroyNode(orphan)
+      }
     }
   }
   destroyInnerHost(parentHandle = false): void {
