@@ -112,7 +112,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
         this.textUI.text = text
         return
       }
-      this.destroyInnerHost()
+      this.teardownPrevious()
       const textUI = createUI('Text', { text }) as IText
       this.textUI = textUI
       insertBefore(textUI, this.placeholder)
@@ -120,11 +120,7 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     }
 
     // 结构路径：整块重建
-    if (this.textUI) {
-      destroyNode(this.textUI)
-      this.textUI = null
-    }
-    this.destroyInnerHost()
+    this.teardownPrevious()
 
     // 失败回滚的区间边界：旧内容已销毁，此刻 (boundary, placeholder) 开区间为空，
     // 本次渲染只会往区间内插入节点，且渲染是同步的（期间不会发生 leafer 的
@@ -198,6 +194,35 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     if (this.pathContext.root.dispatch('error', error)) return
     if (!this.rendered) throw error
     console.error('[axle] function child render failed, the region is rendered empty:', error)
+  }
+  /**
+   * 重算时清掉上一次的内容（文本节点 + 内层 host），销毁错误就地隔离。
+   *
+   * CAUTION teardown 运行在微任务重算里，销毁抛错向上抛只会变成 uncaught
+   *  exception，且中断本次重建、让区域卡在半旧状态——与结构渲染的事务化
+   *  回滚不对称。这里隔离后本次重建照常进行；万一有残留节点落在
+   *  (boundary, placeholder) 区间内，渲染失败时的区间回滚会顺带清掉。
+   *  闭包只在结构切换路径（本身就是整块重建的重量级操作）上分配。
+   */
+  private teardownPrevious(): void {
+    const textUI = this.textUI
+    if (textUI) {
+      this.textUI = null
+      runCleanupIsolated(
+        this.pathContext.root,
+        () => destroyNode(textUI),
+        'function child text teardown',
+      )
+    }
+    const inner = this.innerHost
+    if (inner) {
+      this.innerHost = null
+      runCleanupIsolated(
+        this.pathContext.root,
+        () => inner.destroy(),
+        'function child region teardown',
+      )
+    }
   }
   destroyInnerHost(parentHandle = false): void {
     const host = this.innerHost
