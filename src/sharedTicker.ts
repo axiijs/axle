@@ -12,7 +12,7 @@ export type SharedTicker = {
   add: (callback: (now: number) => void) => () => void
   /** 当前订阅数 */
   readonly size: number
-  /** 整体暂停/恢复（暂停期间循环空转跳过回调，恢复后无需重新订阅） */
+  /** 整体暂停/恢复（暂停期间循环停摆、不空转 rAF，恢复后无需重新订阅） */
   paused: boolean
   destroy: () => void
 }
@@ -37,6 +37,7 @@ export function createSharedTicker(options?: {
   let cancelFrame: (() => void) | null = null
   let lastTick = -Infinity
   let destroyed = false
+  let paused = false
 
   const ticker: SharedTicker = {
     add(callback) {
@@ -52,7 +53,16 @@ export function createSharedTicker(options?: {
     get size() {
       return callbacks.size
     },
-    paused: false,
+    // 暂停时循环整体停摆（不空转 rAF），恢复时自动重启——视口手势期间
+    // 暂停是主要用法，手势帧不应再有每帧一次的空 rAF 回调。
+    get paused() {
+      return paused
+    },
+    set paused(value: boolean) {
+      if (paused === value) return
+      paused = value
+      if (!value && callbacks.size) start()
+    },
     destroy() {
       destroyed = true
       callbacks.clear()
@@ -64,14 +74,14 @@ export function createSharedTicker(options?: {
   }
 
   function start(): void {
-    if (cancelFrame || destroyed) return
+    if (cancelFrame || destroyed || paused) return
     cancelFrame = schedule(tick)
   }
 
   function tick(frameNow: number): void {
     cancelFrame = null
-    if (destroyed) return
-    if (!ticker.paused && callbacks.size) {
+    if (destroyed || paused) return // 暂停期间停摆，恢复由 paused setter 重启
+    if (callbacks.size) {
       const time = typeof frameNow === 'number' ? frameNow : now()
       if (time - lastTick >= minInterval) {
         lastTick = time

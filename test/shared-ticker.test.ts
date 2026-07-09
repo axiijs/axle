@@ -103,6 +103,29 @@ describe('createSharedTicker (05 号文档 §7.1 单一全局 ticker)', () => {
     ticker.destroy()
   })
 
+  it('paused stops the loop entirely (不空转 rAF)，恢复后自动重启', () => {
+    const frames = manualFrames()
+    const ticker = createSharedTicker({ schedule: frames.schedule.bind(frames) })
+    let ticks = 0
+    ticker.add(() => ticks++)
+    expect(frames.pending).toBe(1)
+
+    ticker.paused = true
+    frames.frame() // 消化已排定的一帧：暂停中不执行回调、也不再续调度
+    expect(ticks).toBe(0)
+    expect(frames.pending).toBe(0) // 循环停摆，手势帧上没有空 rAF 回调
+
+    // 暂停期间的新订阅同样不启动循环
+    ticker.add(() => {})
+    expect(frames.pending).toBe(0)
+
+    ticker.paused = false // 恢复自动重启，订阅无需重挂
+    expect(frames.pending).toBe(1)
+    frames.frame()
+    expect(ticks).toBe(1)
+    ticker.destroy()
+  })
+
   it('a throwing callback neither stalls the loop nor starves other subscribers', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
