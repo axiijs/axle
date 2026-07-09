@@ -234,6 +234,26 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('entries deleted from the index unmount before far-away live entries', () => {
+    // 已删除条目在数据层已不存在，不应该比「只是移出窗口」的活条目
+    // 在画布上停留更久（回归用例：distanceTo 曾返回 -1，被降序排序排到队尾）
+    const { index, addCard, viewRect, scheduler, windowed } = setup({ maxOpsPerFrame: 1 })
+    addCard(1, 10, 10)
+    addCard(2, 40, 40)
+    addCard(3, 70, 70)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(3)
+
+    // 同一帧里：删除卡 2 + 视口跳远（1/3 也都要卸载）
+    index.delete(2)
+    viewRect({ x: 5000, y: 5000, width: 100, height: 100 })
+    scheduler.frame() // 每帧 1 个操作：第一个卸载必须是已删除的卡 2
+    expect(windowed.rows.data.map((row) => row.id)).not.toContain(2)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(0)
+    windowed.destroy()
+  })
+
   it('pins (trigger 4) keep entries alive outside the window', () => {
     const pins = atom<number[]>([])
     const { addCard, scheduler, windowed, mountedIds } = setup({ pins: () => pins() })

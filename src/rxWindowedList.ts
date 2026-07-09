@@ -394,8 +394,10 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private distanceTo(bounds: IndexBounds | undefined): number {
     const center = this.lastCenter
     if (!center) return 0
-    // 已从索引删除的条目优先卸载（排到队首）
-    if (!bounds) return -1
+    // 已从索引删除的条目优先卸载：卸载队列按距离降序消化，Infinity 排到队首。
+    // （挂载/替换队列按升序消化，deleted 排到队尾，且出队时会被
+    //  buildMountRow 的存在性校验过滤，不受影响。）
+    if (!bounds) return Infinity
     const dx = bounds.x + bounds.width / 2 - center.x
     const dy = bounds.y + bounds.height / 2 - center.y
     return dx * dx + dy * dy

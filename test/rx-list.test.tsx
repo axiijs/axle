@@ -72,6 +72,30 @@ describe('RxListHost splice', () => {
     expect(rowTexts(group)).toEqual(['y', 'c'])
   })
 
+  it('splice with a negative start follows Array.prototype.splice semantics', () => {
+    // data0 透传原始 splice 参数，负数 start 必须按原生语义规范化，
+    // 否则锚点计算错位、场景图顺序与数据分叉（回归用例）
+    const items = new RxList(['a', 'b', 'c'])
+    const { group } = listGroup(items)
+    items.splice(-1, 1, 'x') // 等价于 splice(2, 1, 'x')
+    expect(items.data).toEqual(['a', 'b', 'x'])
+    expect(rowTexts(group)).toEqual(items.data)
+    items.splice(-2, 0, 'm') // 等价于 splice(1, 0, 'm')
+    expect(items.data).toEqual(['a', 'm', 'b', 'x'])
+    expect(rowTexts(group)).toEqual(items.data)
+    items.splice(-100, 1) // 负越界 → 从 0 开始删除
+    expect(items.data).toEqual(['m', 'b', 'x'])
+    expect(rowTexts(group)).toEqual(items.data)
+  })
+
+  it('splice with start beyond length appends', () => {
+    const items = new RxList(['a'])
+    const { group } = listGroup(items)
+    items.splice(10, 0, 'b')
+    expect(items.data).toEqual(['a', 'b'])
+    expect(rowTexts(group)).toEqual(items.data)
+  })
+
   it('pop and shift remove rows', () => {
     const items = new RxList(['a', 'b', 'c'])
     const { group } = listGroup(items)
