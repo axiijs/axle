@@ -198,9 +198,19 @@ EXPLICIT_KEY_CHANGE)`），用普通数组维护行 Host：
   子序列）求最小搬移集合，逐 host 把 `getNodes()` 区间 `addBefore` 到锚点前。
 - **explicit key change**（`list.set(i, v)`）：销毁旧行 Host，在正确锚点处重建。
   连续 set 时向后找第一个已渲染行作锚点。
-- **负下标 set**（`list.set(-1, v)`）：data0 透传负 key，语义只是 `data[-1] = v`
-  的属性赋值（不改变列表长度、不对应任何行），直接忽略——否则会产生幽灵行
-  簿记并向场景图泄漏占位节点。
+- **set key 归一化**：data0 原样透传 key，必须按 JS **数组下标语义**完整归一化——
+  只有「非负整数（含其规范数字字符串形式，且 ≤ 2^32 − 2）」对应真实的行，其余
+  全是 `data[key] = v` 的属性赋值（不改变列表长度、不对应任何行），必须整体忽略：
+  - **负数**（`list.set(-1, v)`）：忽略——否则 hosts[-1] 挂上幽灵行并向场景图
+    泄漏占位节点；
+  - **小数 / NaN / undefined**（典型来源是 `list.set(map.get(id), v)` 的 get miss）：
+    忽略——否则 `hosts[1.5]` 会挂上数组迭代（forEach / 诊断自检 / rebuildAllRows）
+    **永远看不到**的幽灵行属性，其节点在 destroy 后成为永久孤儿，且集合级 /
+    顺序级自检都发现不了；
+  - **规范数字字符串**（`'1'`，`data['1'] === data[1]`）：先归一为 number 再走正常
+    路径——否则 `findAnchor(index + 1)` 里 `'1' + 1 === '11'` 是字符串拼接，锚点
+    错落到列表尾，数据与场景图顺序**静默永久失步**；非规范形式（`'01'` / `'1.0'`）
+    不是数组下标，按属性赋值忽略。
 
 行 Host 的 effect 不注册为本 computed 的子 effect（`pauseCollectChild`），行的销毁
 由 splice/destroy 显式完成。

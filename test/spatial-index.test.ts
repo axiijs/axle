@@ -125,6 +125,69 @@ describe('SpatialIndex', () => {
     expect(all.sort()).toEqual(['tall', 'wide'])
   })
 
+  it('set 拒绝非有限 bounds（Infinity 会让 cell 循环失控，NaN 让条目永久不可见）', () => {
+    const index = new SpatialIndex<string>()
+    const good = { x: 0, y: 0, width: 10, height: 10 }
+    for (const field of ['x', 'y', 'width', 'height'] as const) {
+      for (const bad of [Infinity, -Infinity, NaN]) {
+        expect(() => index.set('a', { ...good, [field]: bad })).toThrow(/finite/)
+      }
+    }
+    // 断言路径不留半写入状态：条目未进索引，后续正常写入不受影响
+    expect(index.has('a')).toBe(false)
+    index.set('a', good)
+    expect(index.search({ x: -1, y: -1, width: 20, height: 20 })).toEqual(['a'])
+  })
+
+  it('查询矩形远大于内容范围（含 Infinity）时不退化为按矩形面积扫描', () => {
+    const index = new SpatialIndex<string>({ cellSize: 100 })
+    index.set('a', { x: 10, y: 10, width: 20, height: 20 })
+    index.set('b', { x: 950, y: 950, width: 20, height: 20 })
+
+    // 若按矩形面积扫描，1e9 边长 / 100 = 1e7 × 1e7 个 cell，测试会直接超时；
+    // clamp + 稀疏回退后成本是 O(占用 cell 数)
+    expect(index.search({ x: -5e8, y: -5e8, width: 1e9, height: 1e9 }).sort()).toEqual(['a', 'b'])
+
+    // Infinity 尺寸矩形（viewRect 除以异常 scale 的典型形态）同样安全
+    expect(
+      index.search({ x: -1e15, y: -1e15, width: Infinity, height: Infinity }).sort(),
+    ).toEqual(['a', 'b'])
+    // x/width 相加为 NaN 的退化矩形按 boundsIntersect 语义不与任何条目相交
+    expect(index.search({ x: -Infinity, y: 0, width: Infinity, height: 100 })).toEqual([])
+
+    const cells: number[] = []
+    index.forEachCell({ x: -5e8, y: -5e8, width: 1e9, height: 1e9 }, (_bounds, count) =>
+      cells.push(count),
+    )
+    expect(cells).toEqual([1, 1])
+
+    // NaN 矩形：返回空而不是挂死
+    expect(index.search({ x: NaN, y: NaN, width: NaN, height: NaN })).toEqual([])
+    // 空索引 + 巨矩形：占用包围盒为空区间，直接返回空
+    const empty = new SpatialIndex<string>()
+    expect(empty.search({ x: -Infinity, y: -Infinity, width: Infinity, height: Infinity })).toEqual(
+      [],
+    )
+  })
+
+  it('稀疏回退路径保持主 cell 去重与部分覆盖语义（与网格路径一致）', () => {
+    const index = new SpatialIndex<string>({ cellSize: 100 })
+    // 跨 4 个 cell 的条目 + 相距极远的条目（拉大占用包围盒，强制触发稀疏回退）
+    index.set('wide', { x: 80, y: 80, width: 150, height: 150 })
+    index.set('far', { x: -1e6, y: -1e6, width: 20, height: 20 })
+
+    // 巨矩形（回退路径）：跨 cell 条目只报一次
+    const all = index.search({ x: -1e7, y: -1e7, width: 2e7, height: 2e7 })
+    expect(all.sort()).toEqual(['far', 'wide'])
+
+    // 巨矩形但只与 wide 的尾部 cell 相交（主 cell 在矩形外）：不漏报也不重复
+    const partial = index.search({ x: 150, y: 150, width: 2e7, height: 2e7 })
+    expect(partial).toEqual(['wide'])
+
+    // 巨矩形与 wide 的尾部 cell 相交、但与条目 bounds 不相交：不误报
+    expect(index.search({ x: 231, y: 231, width: 2e7, height: 2e7 })).toEqual([])
+  })
+
   it('forEachCell home counts stay correct across moves and deletes (incremental maintenance)', () => {
     const index = new SpatialIndex<number>({ cellSize: 100 })
     const countsIn = (rect: { x: number; y: number; width: number; height: number }) => {
