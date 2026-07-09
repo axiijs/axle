@@ -1,4 +1,4 @@
-export const AXLE_VERSION = '0.0.0'
+export const AXLE_VERSION = '0.1.0'
 
 export { createRoot } from './render.js'
 export type { Root } from './render.js'

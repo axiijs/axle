@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { Frame, Group, Leafer, Rect } from 'leafer-ui'
 import { AXLE_VERSION, createRoot } from '@axiijs/axle'
@@ -5,7 +6,10 @@ import { contentChildren, contentTags, mount } from './helpers.js'
 
 describe('createRoot', () => {
   it('exposes the package version', () => {
-    expect(AXLE_VERSION).toBe('0.0.0')
+    // package.json 是版本号的唯一事实源，AXLE_VERSION 必须与其同步
+    // vitest 的 cwd 是项目根目录（jsdom 环境下 import.meta.url 不是 file 协议）
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
+    expect(AXLE_VERSION).toBe(pkg.version)
   })
 
   it('renders into a Group container', () => {
