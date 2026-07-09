@@ -231,22 +231,35 @@ export class RxWindowedList<T, Id, L extends string = string> {
    */
   private actionableCount(): number {
     if (this.options.interacting?.() !== true) return this.pendingCount
+    // 遍历 pin 集合而不是挂载队列：手势中每帧都要算一次，pin 集合（拖拽中/
+    // 选中的几个条目）通常远小于低档位可达数千条的挂载队列。
     let pinnedMounts = 0
-    for (const id of this.queuedMountIds) {
-      if (this.pinnedSet.has(id)) pinnedMounts++
+    for (const id of this.pinnedSet) {
+      if (this.queuedMountIds.has(id)) pinnedMounts++
     }
     return this.queuedUnmountIds.size + pinnedMounts
   }
 
   /** 一直 flush 到队列排空（测试 / 需要同步收敛的场景用，绕过预算） */
   flushAll(): void {
-    // 递归触发（recompute 引发新的 invalidate）以 32 帧为限，防御死循环
-    for (
-      let i = 0;
-      i < 32 && (this.pendingCount || this.recomputeNeeded || this.pendingChangedIds.size);
-      i++
-    ) {
+    // 收敛循环：只要每轮有推进（消化 / 撤销了任务）就继续，直到排空；
+    // 一轮零推进说明队列被外部条件卡住（interacting 冻结、maxOpsPerFrame
+    // 过小等），立即返回而不是空转。上限防御「recompute 每轮自我重触发」
+    // 的病态反馈环（原 32 帧上限对大队列 + 小预算会静默留下未收敛队列）。
+    for (let i = 0; i < 100000; i++) {
+      if (!(this.pendingCount || this.recomputeNeeded || this.pendingChangedIds.size)) return
+      const opsBefore = this.stats.mounts + this.stats.unmounts + this.stats.replaces
+      const pendingBefore = this.pendingCount
       this.flush()
+      const opsAfter = this.stats.mounts + this.stats.unmounts + this.stats.replaces
+      if (
+        opsAfter === opsBefore &&
+        this.pendingCount === pendingBefore &&
+        !this.recomputeNeeded &&
+        !this.pendingChangedIds.size
+      ) {
+        return
+      }
     }
   }
 
@@ -430,20 +443,31 @@ export class RxWindowedList<T, Id, L extends string = string> {
     }
     if (this.mountCursor < this.pendingMounts.length) {
       if (interacting) {
-        // 手势中挂载预算置 0，但 pin 行（拖拽中/选中）仍需挂载
-        const rest: MountTask<Id, L>[] = []
-        for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
-          const task = this.pendingMounts[i]!
-          if (!this.queuedMountIds.has(task.id)) continue // 已撤销
-          if (this.pinnedSet.has(task.id) && hasBudget()) {
-            this.queuedMountIds.delete(task.id)
-            if (this.applyMount(task.id, task.lod)) ops++
-          } else {
-            rest.push(task)
+        // 手势中挂载预算置 0，但 pin 行（拖拽中/选中）仍需挂载。
+        // 先以 O(|pins|) 判断是否有排队中的 pin 挂载——没有（手势中的常态）
+        // 则整支跳过，避免每帧对数千条冻结队列的重扫 + 数组重建。
+        let hasPinnedMount = false
+        for (const id of this.pinnedSet) {
+          if (this.queuedMountIds.has(id)) {
+            hasPinnedMount = true
+            break
           }
         }
-        this.pendingMounts = rest
-        this.mountCursor = 0
+        if (hasPinnedMount) {
+          const rest: MountTask<Id, L>[] = []
+          for (let i = this.mountCursor; i < this.pendingMounts.length; i++) {
+            const task = this.pendingMounts[i]!
+            if (!this.queuedMountIds.has(task.id)) continue // 已撤销
+            if (this.pinnedSet.has(task.id) && hasBudget()) {
+              this.queuedMountIds.delete(task.id)
+              if (this.applyMount(task.id, task.lod)) ops++
+            } else {
+              rest.push(task)
+            }
+          }
+          this.pendingMounts = rest
+          this.mountCursor = 0
+        }
       } else {
         // 同帧内的多个挂载合并为一次多行 splice（挂载恒定 append 在尾部），
         // 每批之间检查预算。批量减少 RxList trigger 派发与下游 patch 次数。

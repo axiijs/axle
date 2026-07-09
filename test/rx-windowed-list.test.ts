@@ -684,6 +684,33 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('flushAll converges large queues under a tiny per-frame budget (no silent 32-frame cap)', () => {
+    // 回归：旧实现固定 32 轮上限，maxOpsPerFrame=1 时超过 32 个任务会静默留下
+    // 未收敛队列
+    const { addCard, windowed, mountedIds } = setup({ maxOpsPerFrame: 1, buffer: 0 })
+    for (let i = 1; i <= 80; i++) addCard(i, (i % 10) * 10, Math.floor(i / 10) * 10)
+    windowed.flushAll()
+    expect(mountedIds().length).toBe(80)
+    expect(windowed.pendingCount).toBe(0)
+    windowed.destroy()
+  })
+
+  it('flushAll returns immediately when the queue is frozen (interacting) instead of spinning', () => {
+    const interacting = atom(false)
+    const { addCard, windowed, scheduler } = setup({
+      interacting: () => interacting() === true,
+    })
+    addCard(1, 10, 10)
+    scheduler.settle()
+    interacting(true)
+    addCard(2, 20, 20)
+    // 手势中挂载被冻结：flushAll 不应空转，也不应消化非 pin 挂载
+    windowed.flushAll()
+    expect(windowed.rows.data.map((row) => row.id)).toEqual([1])
+    expect(windowed.pendingCount).toBeGreaterThan(0)
+    windowed.destroy()
+  })
+
   it('the rxWindowedList factory constructs a working instance', () => {
     const index = new SpatialIndex<number>({ cellSize: 100 })
     index.set(1, { x: 10, y: 10, width: 10, height: 10 })

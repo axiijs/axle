@@ -27,6 +27,8 @@ export { EVENT_PROP_TO_TYPE, createPlaceholder, isPlaceholder, isAttachedTo } fr
 
 export { BindingEffect, DeferredBindingEffect } from './BindingEffect.js'
 
+export { setListDiagnostics } from './RxListHost.js'
+
 export {
   RxLeaferState,
   RxViewport,

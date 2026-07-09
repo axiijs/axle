@@ -42,9 +42,11 @@ npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199
 - 未注册钩子：**初次渲染**（用户 render 调用栈上）保持向上抛；**后续更新**运行在微任务 /
   data0 trigger session 里，向上抛只会变成 uncaught exception / unhandled rejection，
   一律降级为 `console.error` + 跳过；
-- **生命周期回调也在契约内**：effect/layoutEffect 抛错走钩子（兄弟回调照常执行、已渲染
-  区域不回滚）；**清理回调**（onCleanup/effect 清理等）抛错绝不向上抛（`runCleanupIsolated`，
-  单行清理错误不允许升级成整列表 rebuild）；**error 钩子自身抛错**由 dispatch 就地隔离
+- **生命周期回调也在契约内**：effect/layoutEffect/**ref attach** 抛错走钩子（兄弟回调
+  照常执行、已渲染区域不回滚）；**清理回调**（onCleanup/effect 清理/**ref detach** 等）
+  抛错绝不向上抛（`runCleanupIsolated`，单行清理错误不允许升级成整列表 rebuild）；
+  列表**行销毁**整体隔离（`RxListHost.destroyRowHost`：销毁抛错报告 + 节点兜底清理，
+  被 splice 摘出簿记的行绝不允许泄漏成孤儿）；**error 钩子自身抛错**由 dispatch 就地隔离
   （冒出去会击穿 data0 的 runSimplePatch 把 computed 永久卡死）；
 - **渲染必须事务化**：失败时回滚已插入场景图的节点（`RxListHost.createRowHost`、
   `FunctionHost.renderSource` 的 `(boundary, placeholder)` 区间回滚是范式），绝不留孤儿节点；
@@ -64,11 +66,12 @@ leafer 的 zIndex 会对 children 数组**原地 sort**。因此：`getNodes()` 
 不一致（集合必须一致）；簿记按引用、锚点下标实时取（`insertBefore` 现查 indexOf）；
 **绑定 zIndex 的列表禁止 reorder patch**，视觉叠放次序由显式 zIndex 决定，窗口化列表只发 splice。
 
-### 5. layoutEffect / 组件 ref 的连通契约（doc/02 §3.4）
+### 5. layoutEffect / ref 的连通契约（doc/02 §3.4）
 
-执行时保证组件子树已接入 `root.container`（能拿到 `ui.leafer`）。实现是 root 的连通队列
-（`deferAttached` / `flushAttachQueue`）；无 layoutEffect 且无 ref 的组件必须继续完全跳过
-该机制（虚拟化主路径零开销）。组件在连通前被销毁必须取消队列条目。
+组件 layoutEffect、组件 ref、**元素 ref** 执行时保证所在子树已接入 `root.container`
+（能拿到 `ui.leafer`）。实现是 root 的连通队列（`deferAttached` / `flushAttachQueue`）；
+无 layoutEffect 且无 ref 的组件 / 元素必须继续完全跳过该机制（虚拟化主路径零开销）。
+组件 / 元素在连通前被销毁必须取消队列条目（ref 不 attach 也不收到 detach 的 null）。
 
 ### 6. 对 data0 内部行为的依赖要有注释背书
 

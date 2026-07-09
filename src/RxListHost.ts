@@ -19,6 +19,17 @@ function isHostRendered(host: Host): boolean {
   return !!host.firstNode.parent
 }
 
+let listDiagnosticsEnabled = false
+
+/**
+ * 开发期列表不变量自检开关（对齐 axii 的 assertListInvariants）：开启后每个
+ * patch 批次结束时校验簿记与场景图的一致性，失败走 error 钩子并触发
+ * rebuildAllRows 自愈。生产默认关闭，正常路径只多一次布尔检查。
+ */
+export function setListDiagnostics(enabled: boolean): void {
+  listDiagnosticsEnabled = enabled
+}
+
 /**
  * RxList child：直接订阅 source 的 patch（splice / reorder / explicit key change），
  * 用普通数组维护每个 item 对应的行 Host，把 patch 映射为最小数量的场景图操作。
@@ -115,6 +126,33 @@ export class RxListHost implements Host {
       console.error('[axle] list row render failed, the row is rendered empty:', error)
     }
   }
+  /**
+   * 销毁一个行 host，错误就地隔离。
+   *
+   * CAUTION 行销毁运行在 data0 的 computed patch 里（splice 删除 / set 替换），
+   *  向上抛会中断同批兄弟行的销毁、并触发 applyPatch 兜底的 rebuildAllRows——
+   *  而此刻被删行已从 hosts 簿记里 splice 出去，rebuild 够不到它们，未销毁的
+   *  节点将成为**永久孤儿**（违反「簿记与场景图绝不失步」的硬契约）。销毁抛错
+   *  （如行内清理回调 / leafer 内部错误）时报告错误，并对该行残留的场景图节点
+   *  做兜底清理。正常路径只多一个 try 栈帧，成本只在错误路径上。
+   */
+  destroyRowHost(host: Host, parentHandle?: boolean): void {
+    try {
+      host.destroy(parentHandle)
+    } catch (error) {
+      if (!this.pathContext.root.dispatch('error', error)) {
+        console.error('[axle] list row destroy failed, cleaning up its nodes:', error)
+      }
+      // parentHandle 时节点由祖先整体销毁，这里只兜底非 parentHandle 路径
+      if (!parentHandle) {
+        try {
+          for (const node of host.getNodes()) destroyNode(node)
+        } catch {
+          // 节点兜底清理尽力而为（host 可能已半销毁），剩余由 GC / 祖先销毁收尾
+        }
+      }
+    }
+  }
   /** 从 index 开始（含 index）向后找第一个已渲染行的首节点，找不到则用 list 占位符 */
   findAnchor(index: number): IUI {
     const hosts = this.hosts!
@@ -180,6 +218,18 @@ export class RxListHost implements Host {
               break
             }
           }
+          // 开发期自检：不变量破坏（契约外用法把簿记与场景图弄失步）在
+          // 每个 patch 批次后立即暴露并自愈。生产路径只多一次布尔检查。
+          if (listDiagnosticsEnabled) {
+            try {
+              host.assertListInvariants()
+            } catch (error) {
+              if (!host.pathContext.root.dispatch('error', error)) {
+                console.error('[axle] RxList invariants broken, rebuilding from data:', error)
+              }
+              host.rebuildAllRows()
+            }
+          }
         } finally {
           this.resumeCollectChild()
         }
@@ -217,7 +267,7 @@ export class RxListHost implements Host {
     const anchor = this.findAnchor(start + deleteCount)
     const newHosts = newItems.map((item) => this.createRowHost(item, anchor))
     const deletedHosts = hosts.splice(start, deleteCount, ...newHosts)
-    for (const deleted of deletedHosts) deleted.destroy()
+    for (const deleted of deletedHosts) this.destroyRowHost(deleted)
   }
   handleReorder(pairs: [number, number][], reorderInfo?: ReorderInfo): void {
     const hosts = this.hosts!
@@ -293,10 +343,32 @@ export class RxListHost implements Host {
       return
     }
     const oldHost = hosts[index]
-    oldHost?.destroy()
+    if (oldHost) this.destroyRowHost(oldHost)
     // 连续 set 时后面的行 host 可能也是新的（未渲染），向后找第一个已渲染行作锚点
     const anchor = this.findAnchor(index + 1)
     hosts[index] = this.createRowHost(data[index], anchor)
+  }
+  /**
+   * 开发期不变量自检（setListDiagnostics 开启时每个 patch 批次后调用）：
+   * - 簿记与数据等长且无 hole；
+   * - 每行的首节点与 list 占位符都在场景图里、且同属一个 branch
+   *   （zIndex 物理重排只改变顺序、不改变集合与父节点，见 doc/02 §3.1 附注，
+   *   所以这里只校验集合级一致性、不校验顺序）。
+   */
+  assertListInvariants(): void {
+    const hosts = this.hosts!
+    const data = this.source.data
+    assert(
+      hosts.length === data.length,
+      `list bookkeeping length ${hosts.length} != data length ${data.length}`,
+    )
+    const parent = this.placeholder.parent
+    assert(parent, 'list placeholder is not in the scene graph')
+    for (let i = 0; i < hosts.length; i++) {
+      const host = hosts[i]
+      assert(host, `list bookkeeping has a hole at index ${i}`)
+      assert(host.firstNode.parent === parent, `list row ${i} is not in the list branch`)
+    }
   }
   /**
    * 错误恢复路径：销毁全部行、按当前数据全量重建。
@@ -307,11 +379,8 @@ export class RxListHost implements Host {
     for (const rowHost of hosts) {
       // 失步状态下行销毁是尽力而为（个别行可能已半损坏）；行 host 各自持有
       // 自己的节点（行创建是事务化的），逐行销毁即可清空整个列表区间。
-      try {
-        rowHost?.destroy()
-      } catch {
-        // 剩余绑定由 GC 兜底，优先保证重建继续
-      }
+      // destroyRowHost 隔离销毁错误并兜底清理节点，保证重建继续。
+      if (rowHost) this.destroyRowHost(rowHost)
     }
     hosts.length = 0
     const data = this.source.data
@@ -320,8 +389,9 @@ export class RxListHost implements Host {
     }
   }
   destroy(parentHandle?: boolean): void {
-    destroyComputed(this.hostRenderComputed)
-    this.hosts?.forEach((host) => host.destroy(parentHandle))
+    // render 之前就被销毁（所在渲染事务回滚）时 computed 尚未创建
+    if (this.hostRenderComputed) destroyComputed(this.hostRenderComputed)
+    this.hosts?.forEach((host) => this.destroyRowHost(host, parentHandle))
     if (!parentHandle) destroyNode(this.placeholder)
   }
 }

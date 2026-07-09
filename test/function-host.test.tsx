@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { atom } from 'data0'
-import type { IText } from 'leafer-ui'
+import { Rect } from 'leafer-ui'
+import type { IText, IUI } from 'leafer-ui'
 import { contentChildren, contentTags, mount, tick } from './helpers.js'
 
 describe('FunctionHost text fast path', () => {
@@ -120,6 +121,31 @@ describe('FunctionHost structure path', () => {
     count(3)
     await tick()
     expect(contentTags(group!)).toEqual(['Rect', 'Rect', 'Rect'])
+  })
+})
+
+describe('FunctionHost teardown isolation', () => {
+  it('旧内容销毁抛错：错误进钩子，本次重建照常完成（区域不卡在半旧状态）', async () => {
+    // RawUIHost.destroy 调用用户实例的 remove()，让它抛错来模拟销毁失败
+    const rawUI = new Rect({ width: 7 }) as unknown as IUI
+    const originalRemove = rawUI.remove.bind(rawUI)
+    rawUI.remove = () => {
+      rawUI.remove = originalRemove
+      throw new Error('teardown boom')
+    }
+    const mode = atom<'raw' | 'text'>('raw')
+    const { container, root } = mount(<group>{() => (mode() === 'raw' ? rawUI : 'done')}</group>)
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!)[0]!.tag).toBe('Rect')
+
+    mode('text')
+    await tick()
+    // teardown 抛错被隔离：错误已上报，新文本照常渲染
+    expect(errors.length).toBe(1)
+    const texts = contentChildren(group!).filter((c) => c.tag === 'Text') as IText[]
+    expect(texts.map((t) => t.text)).toContain('done')
   })
 })
 
