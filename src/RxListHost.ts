@@ -328,13 +328,34 @@ export class RxListHost implements Host {
       anchor = rowHost.firstNode
     }
   }
-  handleExplicitKeyChange(index: number): void {
+  handleExplicitKeyChange(rawKey: number): void {
     const hosts = this.hosts!
     const data = this.source.data
-    // CAUTION data0 透传负 key：list.set(-1, v) 只是 data[-1] = v 的属性赋值，
-    //  不改变列表长度、不对应任何行——直接忽略，否则 hosts[-1] 会挂上
-    //  幽灵行并向场景图泄漏一个占位节点。正常路径只多一次整数比较。
-    if (index < 0) return
+    // CAUTION data0 透传未归一化的 key（与 splice argv 同一问题，doc/02 §3.3）：
+    //  必须按 JS 数组下标语义完整归一化，只有「非负整数（或其规范数字字符串）」
+    //  才对应真实的行，其余全是 data[key] = v 的属性赋值——不改变列表长度、
+    //  不对应任何行，必须整体忽略：
+    //  - 负数（list.set(-1, v)）：忽略，否则 hosts[-1] 挂上幽灵行；
+    //  - undefined / NaN（典型来源是 `list.set(map.get(id), v)` 的 get miss）
+    //    与小数（1.5）：忽略，否则 hosts[1.5] 会挂上数组迭代（forEach / 诊断
+    //    自检 / rebuildAllRows）永远看不到的幽灵行**属性**，其节点在 destroy
+    //    后成为永久孤儿；
+    //  - 规范数字字符串（'1'，data['1'] === data[1]）：先归一为 number，否则
+    //    findAnchor(index + 1) 里 '1' + 1 === '11' 是字符串拼接，锚点错落到
+    //    列表尾、数据与场景图顺序静默永久失步；非规范形式（'01' / '1.0'）
+    //    不是数组下标（data['01'] !== data[1]），按属性赋值忽略。
+    //  - 超出数组下标上限（2^32 - 2）的整数：同样是属性赋值、不改变 length，
+    //    忽略——否则下面的越界补洞 while 会试图 push 数十亿个空行直接 OOM。
+    //  性能：正常路径（number key）只多一次 typeof + 三次数值比较，
+    //  字符串归一只在异常 key 路径上分配。每个 set patch 一次，不在每行路径上。
+    let index: number
+    if (typeof rawKey === 'number') {
+      index = rawKey
+    } else {
+      index = Number(rawKey)
+      if (String(index) !== (rawKey as unknown as string)) return
+    }
+    if (!Number.isInteger(index) || index < 0 || index > 0xfffffffe) return
     // CAUTION 越界 set（list.set(i, v)，i >= 当前长度）的语义同 arr[i] = v：
     //  data 变长并出现稀疏空洞。簿记必须与数据保持等长且无 hole，否则后续
     //  patch 的 findAnchor / getNodes 会踩到 undefined（hosts[i]! 非空断言）、

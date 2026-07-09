@@ -102,6 +102,66 @@ describe('fuzz: RxListHost 顺序一致性', () => {
   })
 })
 
+describe('fuzz: RxListHost set key 归一化', () => {
+  // 直接渲染 RxList（不经过 data0 的 .map 派生）：.map 派生列表的异常 key
+  // 会先经过 data0 自己的 map patch（上游有独立的健壮性问题，不在 axle
+  // 契约内），直接渲染才能把随机 key 风暴对准 handleExplicitKeyChange 本身。
+  it('随机 set key（整数/越界/负数/小数/NaN/undefined/字符串）交错下顺序恒一致、destroy 无残留', () => {
+    setListDiagnostics(true)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      for (let seed = 1; seed <= 16; seed++) {
+        const rand = makeRandom(seed * 31337)
+        let counter = 0
+        const items = new RxList<number>(
+          Array.from({ length: 3 + Math.floor(rand() * 8) }, () => counter++),
+        )
+        const { container, root } = mount(items)
+        const check = () => {
+          const expected: string[] = []
+          for (let i = 0; i < items.data.length; i++) {
+            const v = items.data[i]
+            if (v !== null && v !== undefined) expected.push(String(v))
+          }
+          expect(texts(container)).toEqual(expected)
+          expect(consoleError, `self-heal triggered (seed ${seed})`).not.toHaveBeenCalled()
+        }
+        check()
+        for (let step = 0; step < 80; step++) {
+          const len = items.length()
+          const op = Math.floor(rand() * 4)
+          if (op === 0) {
+            items.push(counter++)
+          } else if (op === 1 && len) {
+            items.splice(Math.floor(rand() * len), 1)
+          } else {
+            // 合法与异常 key 混合：归一化必须让异常 key 成为纯 no-op，
+            // 不污染簿记（幽灵行属性）、不触发 rebuild 自愈
+            const keyStyles: unknown[] = [
+              Math.floor(rand() * (len + 1)), // 合法（含越界补洞）
+              len + 2, // 越界补洞
+              -1 - Math.floor(rand() * 3), // 负数
+              rand() * len + 0.5, // 小数
+              NaN,
+              undefined,
+              String(Math.floor(rand() * (len + 1))), // 规范数字字符串
+              `0${Math.floor(rand() * 9) + 1}`, // 非规范数字字符串（'01'…'09'）
+            ]
+            const key = keyStyles[Math.floor(rand() * keyStyles.length)]
+            items.set(key as number, counter++)
+          }
+          check()
+        }
+        root.destroy()
+        // 反向断言无残留：幽灵行属性挂的节点只有在这里才会暴露
+        expect(container.children ?? [], `orphan nodes after destroy (seed ${seed})`).toEqual([])
+      }
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
 describe('fuzz: RxWindowedList 簿记收敛', () => {
   it('随机索引/视口/pin/interacting 序列收敛后簿记与目标集合规则恒成立', () => {
     const BUFFER = 0.5
