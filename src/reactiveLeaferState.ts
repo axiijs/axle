@@ -5,12 +5,11 @@ import { LayoutEvent, MoveEvent, PointerEvent, PropertyEvent, ZoomEvent } from '
 import { assert, shallowEqual } from './util.js'
 
 /**
- * 「Leafer 原生状态 → 响应式数据」的反向同步范式，移植自 axii 的
- * `reactiveDOMState.ts`（RxDOMState 一族），约定完全一致：
+ * 「Leafer 原生状态 → 响应式数据」的反向同步范式：
  *
  * 1. **入口是 ref**：实例的 `ref` 方法直接作为 JSX 的 `ref` prop
  *    （`<rect ref={rxHovered.ref} />`，可与业务 ref 组成数组），也可以手动调用
- *    （`rxViewport.ref(leafer)`，对应 axii 里 `rxSize.ref(window)` 的用法）。
+ *    （`rxViewport.ref(leafer)`）。
  * 2. **严格单向**：leafer 事件 → 读引擎状态 → `shallowEqual` 去抖 → 写 atom。
  *    子类从不反向写场景图；反向操作走引擎显式 API（`leafer.zoom()`、`ui.x = ...`）。
  * 3. **生命周期自动化**：继承 data0 的 `ManualCleanup`，在组件 render 期间创建的
@@ -34,7 +33,7 @@ export class RxLeaferState<T, U> extends ManualCleanup {
   }
   ref = (target: T | null): void => {
     const originTarget = this.target
-    // CAUTION 与 axii 的差异：ref 直接换绑到新目标时先解绑旧目标，避免旧监听泄漏
+    // CAUTION ref 直接换绑到新目标时先解绑旧目标，避免旧监听泄漏
     if (originTarget && this.abort) this.unlisten(originTarget)
     this.target = target
     if (this.target) {
@@ -63,7 +62,7 @@ export type ViewportState = {
 }
 
 /**
- * 视口状态（对应 axii 的 `RxDOMScrollPosition` / window 版 `RxDOMRect`）：
+ * 视口状态：
  * 把 leafer viewport（zoomLayer 的平移/缩放）同步成响应式数据。
  *
  * - 数据源挂 `layout.after`：滚轮/手势缩放、`leafer.zoom()` API、直接改 zoomLayer
@@ -101,8 +100,8 @@ export class RxViewport extends RxLeaferState<ILeaferBase, ViewportState> {
 }
 
 /**
- * 元素位置（对应 axii 的 `RxDOMRect`，但 leafer 有 DOM 没有的逐属性变更事件，
- * 不需要 axii 那套「触发源 options」）：把 UI 元素的 `x`/`y` 同步成响应式数据。
+ * 元素位置（leafer 有 DOM 没有的逐属性变更事件 `property.change`，
+ * 不需要「触发源 options」那类机制）：把 UI 元素的 `x`/`y` 同步成响应式数据。
  *
  * 设计意图是让「引擎状态成为唯一事实源」：元素设 `draggable` 后由引擎移动，
  * 位置通过本类流入响应式世界（连线等下游自动跟随），**不再需要 `onDrag` 手动
@@ -190,8 +189,7 @@ export class RxViewportInteracting extends RxLeaferState<ILeaferBase, boolean> {
 }
 
 /**
- * 悬停状态（对应 axii 的 `RxDOMHovered`）：`pointer.enter` / `pointer.leave` →
- * `Atom<boolean | null>`。
+ * 悬停状态：`pointer.enter` / `pointer.leave` → `Atom<boolean | null>`。
  */
 export class RxUIHovered extends RxLeaferState<IUI, boolean> {
   listen(): void {

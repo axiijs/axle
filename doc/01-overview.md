@@ -56,8 +56,8 @@ src/
   ComponentHost.ts   函数组件
   render.ts          createRoot
   leafer.ts          Leafer 桥接（创建节点/占位符/插入/事件名映射）
-  BindingEffect.ts   轻量绑定 effect（移植自 axii）
-  reactiveLeaferState.ts 「引擎状态 → 响应式数据」反向同步（移植自 axii 的 RxDOMState 范式）
+  BindingEffect.ts   轻量绑定 effect
+  reactiveLeaferState.ts 「引擎状态 → 响应式数据」反向同步
   util.ts            assert 等
 doc/                 设计文档
 test/                vitest 测试（jsdom + canvas mock）

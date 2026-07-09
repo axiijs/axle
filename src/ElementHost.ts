@@ -166,24 +166,38 @@ export class ElementHost implements Host {
       for (const [key, value] of reactiveProps) {
         // CAUTION 属性更新抛错：外部通过 root.on('error') 注册了处理器时报告
         //  错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），与
-        //  ComponentHost/FunctionHost 的错误钩子语义一致（对齐 axii 的同名修复）。
+        //  ComponentHost/FunctionHost 的错误钩子语义一致。
         //  未注册处理器时只有初始求值（用户主动的 render 调用栈上）保持向上抛；
         //  后续更新运行在 data0 的 trigger session 里，向上抛会让异常从任意
         //  model 写入点冒出来、并中断同一 session 里其余绑定的本次更新，
         //  所以降级为 console.error + 跳过，与 RxList 行错误的契约一致。
-        let rendered = false
+        //
+        // 「是否在初次渲染调用栈上」用 initialRenderDone 判定（初始 run 是否
+        //  已返回），而不是「首次赋值是否成功」：钩子消费掉初始错误后，后续
+        //  更新已不在用户 render 调用栈上，即使从未成功赋值过也必须降级为
+        //  console.error + 跳过，绝不允许从 trigger session 向上抛。
+        let initialRenderDone = false
         const effect = new BindingEffect(() => {
           try {
             target[key] = Array.isArray(value) ? value.map(evaluate) : evaluate(value)
-            rendered = true
           } catch (e) {
             if (this.pathContext.root.dispatch('error', e)) return
-            if (!rendered) throw e
+            if (!initialRenderDone) throw e
             console.error(`[axle] reactive prop "${key}" update failed, skipping this update:`, e)
           }
         })
-        effect.run()
+        // CAUTION 先簿记后运行（与 childHosts「先 push 再 render」同一范式）：
+        //  初始求值抛错时依赖已经被追踪，effect 若不先进 attrEffects，事务
+        //  回滚（destroy）就够不到它——泄漏成继续响应依赖的活效应，之后对
+        //  该依赖的每次写入都会重跑抛错的 getter、把异常抛进 data0 的
+        //  trigger session（击穿 runSimplePatch，见 render.ts 的 CAUTION）。
+        //  纯语句重排 + 一个 try/finally 栈帧，挂载热路径零新增分配。
         attrEffects.push(effect)
+        try {
+          effect.run()
+        } finally {
+          initialRenderDone = true
+        }
       }
     }
 
@@ -304,5 +318,11 @@ export class ElementHost implements Host {
     // 波及——不销毁则 leafer 资源（image 加载任务、事件表）泄漏。已入场景图
     // 的正常 parentHandle 路径只多一次指针判空（祖先随后整体销毁）。
     if (this.ui && (!parentHandle || !this.ui.parent)) destroyNode(this.ui)
+    // 未消费的占位符只出现在「render 中途抛错」之后（正常 render 末尾已消费
+    // 并置 null）：placeholder 路径的占位符在 render 一开始就进了场景图，
+    // 事务失败后走非 parentHandle 销毁（如初次渲染失败后的 root.destroy）时
+    // 必须清掉，否则成为永久孤儿节点（违反「绝不留孤儿」的事务化契约）。
+    // parentHandle 路径由祖先整体销毁 / 区间回滚覆盖。正常路径只多一次判空。
+    if (this.placeholder && !parentHandle) destroyNode(this.placeholder)
   }
 }

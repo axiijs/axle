@@ -22,7 +22,13 @@ export function stringValue(v: unknown): string {
  */
 export class AtomHost extends BindingEffect implements Host {
   textUI?: IText
-  /** 初始求值是否已成功完成（区分「render 抛错」与「更新抛错」的错误策略） */
+  /**
+   * 初次渲染（用户 render 调用栈上的初始求值）是否已经结束。
+   * CAUTION 判定的是「是否还在初次渲染调用栈上」而不是「首次求值是否成功」：
+   *  error 钩子消费掉初始错误后，后续更新已运行在 data0 trigger session 里，
+   *  即使从未成功求值过也必须降级为 console.error + 跳过（若按「首次成功」
+   *  判定，钩子中途被注销时更新错误会从 model 写入点向上抛）。
+   */
   rendered = false
   constructor(
     public source: Atom<unknown>,
@@ -49,7 +55,6 @@ export class AtomHost extends BindingEffect implements Host {
     //  （effect 保持活跃，依赖恢复后继续更新），与 RxList 行错误的契约一致。
     try {
       this.textUI!.text = stringValue(this.source())
-      this.rendered = true
     } catch (e) {
       if (this.pathContext.root.dispatch('error', e)) return
       if (!this.rendered) throw e
@@ -60,7 +65,11 @@ export class AtomHost extends BindingEffect implements Host {
     const textUI = (this.textUI = createUI('Text') as IText)
     insertBefore(textUI, this.placeholder)
     destroyNode(this.placeholder)
+    // rendered 在 run 返回后置位（与 FunctionHost.render 同一范式）：
+    // 无钩子初始抛错从 run 冒出时保持 false（向上抛契约不变）；
+    // 钩子消费初始错误后置 true，此后的更新错误一律降级。
     this.run()
+    this.rendered = true
   }
   destroy(parentHandle?: boolean): void {
     // CAUTION 静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数

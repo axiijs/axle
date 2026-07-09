@@ -139,8 +139,8 @@ export class ComponentHost implements Host {
     }
   }
   /**
-   * 挂载期生命周期回调（useEffect / useLayoutEffect）的统一错误出口
-   * （对齐 axii 的同名方法）：注册了 root error 钩子时交给钩子——兄弟回调
+   * 挂载期生命周期回调（useEffect / useLayoutEffect）的统一错误出口：
+   * 注册了 root error 钩子时交给钩子——兄弟回调
    * 照常执行、已渲染的区域保持不动；未注册钩子时保持向上抛：初次渲染时
    * 落在用户的 render 调用栈上，行/区域挂载中由所在渲染事务按无钩子契约
    * 降级（doc/02 §3.4）。
@@ -164,7 +164,7 @@ export class ComponentHost implements Host {
       this.runWithErrorHook(() => attachRef(this.refProp, { ...this.exposed }))
     }
     this.layoutEffects?.forEach((layoutEffect) => {
-      // CAUTION layoutEffect 抛错走 error 钩子（对齐 axii）：否则会打断同批
+      // CAUTION layoutEffect 抛错走 error 钩子：否则会打断同批
       //  其他 layoutEffect / ref，且从 flushAttachQueue 冒出去时会把已经
       //  渲染成功的所在区域误当成渲染失败回滚掉。
       const handle = this.runWithErrorHook(layoutEffect)

@@ -12,7 +12,7 @@ import {
 import type { Computed, TrackOpTypes, TriggerInfo, TriggerOpTypes } from 'data0'
 
 /**
- * data0 内部行为契约测试（对齐 axii 的 data0Contract.spec 思路）：
+ * data0 内部行为契约测试：
  *
  * axle 对 data0 的若干**私有实现细节**有依赖（AGENTS.md §6 列举的 CAUTION 点）。
  * 这里把每条依赖钉成测试——升级 data0 后任何一条破坏都会在这里首先失败，
