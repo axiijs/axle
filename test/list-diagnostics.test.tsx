@@ -44,6 +44,46 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     root.destroy()
   })
 
+  it('顺序级失步（无 zIndex 分支）也在下一个 patch 批次暴露并自愈', () => {
+    setListDiagnostics(true)
+    const list = new RxList<number>([1, 2, 3])
+    const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+
+    // 契约外：外部把第一行节点重新 append 到末尾——集合级不变量仍然成立
+    //（节点都在、父节点没变），只有顺序级校验能发现
+    const branch = container.children![0] as IUI
+    const firstRow = branch.children!.find((c) => (c as IUI).tag === 'Text') as IUI
+    branch.add(firstRow)
+    expect(rowTexts(container)).toEqual(['2', '3', '1'])
+
+    list.push(4)
+    expect(errors.length).toBe(1)
+    expect(rowTexts(container)).toEqual(['1', '2', '3', '4']) // rebuild 自愈
+    root.destroy()
+  })
+
+  it('带 zIndex 的分支跳过顺序级校验（物理重排例外，splice 照常无误报）', () => {
+    setListDiagnostics(true)
+    const list = new RxList<number>([1, 2, 3])
+    const { container, root } = mount(
+      // zIndex 倒序：leafer 会对 children 物理重排，物理顺序与簿记顺序不一致是契约内行为
+      <group>{list.map((v) => <text zIndex={10 - v}>{() => String(v)}</text>)}</group>,
+    )
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    const branch = container.children![0] as IUI
+    // 触发 leafer 的 zIndex 物理 sort（测试环境无渲染循环，手动触发）
+    ;(branch as unknown as { __updateSortChildren: () => void }).__updateSortChildren()
+
+    list.push(4)
+    list.splice(0, 1)
+    expect(errors.length).toBe(0) // 不误报
+    expect(rowTexts(container).sort()).toEqual(['2', '3', '4'])
+    root.destroy()
+  })
+
   it('未开启时不做自检（失步静默保留，行为与旧版一致）', () => {
     const list = new RxList<number>([1, 2])
     const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)

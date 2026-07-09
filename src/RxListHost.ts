@@ -254,12 +254,18 @@ export class RxListHost implements Host {
   }
   handleSplice(argv: unknown[], deletedItems?: unknown[]): void {
     const hosts = this.hosts!
-    // CAUTION data0 透传未归一化的 argv：负 start（splice(-1, 0, x)）直接用于
-    //  findAnchor / hosts.splice 会让簿记与场景图脱同步。按 Array.prototype.splice
-    //  的语义归一化（hosts 长度此刻等于 splice 前的数据长度）。
-    const rawStart = argv[0] as number
+    // CAUTION data0 透传未归一化的 argv：负 start、非有限值（undefined / NaN，
+    //  典型来源是 `list.splice(map.get(id), 1)` 的 get miss）、小数都会原样
+    //  到达。必须按 Array.prototype.splice 的 ToIntegerOrInfinity + clamp 语义
+    //  完整归一化：hosts.splice 内部按 JS 语义自行归一，而 findAnchor 的 for
+    //  循环不会——NaN 让循环一次都不跑（锚点错落到列表尾）、小数让 hosts[i]
+    //  全部 miss（踩非空断言）——簿记与场景图顺序会永久失步，且集合级自检
+    //  发现不了。每个 splice patch 一次 Number + trunc + 两次比较，不在每行
+    //  路径上。
+    const raw = Number(argv[0])
+    const truncated = Number.isNaN(raw) ? 0 : Math.trunc(raw) // ±Infinity 由下行 clamp
     const start =
-      rawStart < 0 ? Math.max(hosts.length + rawStart, 0) : Math.min(rawStart, hosts.length)
+      truncated < 0 ? Math.max(hosts.length + truncated, 0) : Math.min(truncated, hosts.length)
     const deleteCount = deletedItems ? deletedItems.length : 0
     const newItems = argv.slice(2)
 
@@ -351,9 +357,12 @@ export class RxListHost implements Host {
   /**
    * 开发期不变量自检（setListDiagnostics 开启时每个 patch 批次后调用）：
    * - 簿记与数据等长且无 hole；
-   * - 每行的首节点与 list 占位符都在场景图里、且同属一个 branch
-   *   （zIndex 物理重排只改变顺序、不改变集合与父节点，见 doc/02 §3.1 附注，
-   *   所以这里只校验集合级一致性、不校验顺序）。
+   * - 每行的首节点与 list 占位符都在场景图里、且同属一个 branch；
+   * - **顺序级**：分支内没有任何 zIndex 参与排序时，行首节点的物理顺序必须
+   *   与簿记顺序一致、且占位符在所有行之后。zIndex 物理重排例外（doc/02
+   *   §3.1 附注）只豁免「场景图物理顺序」，簿记与数据的对应关系仍必须成立；
+   *   顺序失步（splice 锚点错位一类）不校验这一层就只会以视觉错乱出现、
+   *   无法定位。带 zIndex 的分支跳过（顺序由 leafer sort 决定，集合级已够）。
    */
   assertListInvariants(): void {
     const hosts = this.hosts!
@@ -369,6 +378,23 @@ export class RxListHost implements Host {
       assert(host, `list bookkeeping has a hole at index ${i}`)
       assert(host.firstNode.parent === parent, `list row ${i} is not in the list branch`)
     }
+    // 顺序级校验（仅诊断模式，O(children) 建一次下标表 + O(rows) 扫描）
+    const siblings = parent.children as IUI[] | undefined
+    if (!siblings) return
+    for (const node of siblings) {
+      if ((node as { zIndex?: number }).zIndex) return // zIndex 分支：物理顺序豁免
+    }
+    const nodeIndex = new Map<IUI, number>()
+    for (let i = 0; i < siblings.length; i++) nodeIndex.set(siblings[i]!, i)
+    let lastIndex = -1
+    for (let i = 0; i < hosts.length; i++) {
+      const index = nodeIndex.get(hosts[i]!.firstNode)
+      assert(index !== undefined, `list row ${i} first node is not among the branch children`)
+      assert(index > lastIndex, `list row ${i} is out of order in the scene graph`)
+      lastIndex = index
+    }
+    const placeholderIndex = nodeIndex.get(this.placeholder)!
+    assert(placeholderIndex > lastIndex, 'list placeholder is not after the last row')
   }
   /**
    * 错误恢复路径：销毁全部行、按当前数据全量重建。
