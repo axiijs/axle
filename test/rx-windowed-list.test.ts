@@ -569,6 +569,29 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('an invalidated mount task (fails the pre-mount recheck) does not consume the frame budget', () => {
+    const { index, addCard, viewRect, scheduler, windowed, mountedIds } = setup({
+      maxOpsPerFrame: 1,
+    })
+    // 视口中心 (50,50)：按距离升序，挂载顺序为 1 → 2 → 3
+    addCard(1, 43, 43)
+    addCard(2, 25, 25)
+    addCard(3, 5, 5)
+    viewRect({ x: 0, y: 0, width: 100, height: 100 })
+    scheduler.frame() // 预算 1：只挂载 card 1
+    expect(mountedIds()).toEqual([1])
+
+    // 白盒：绕过变更通知直接抹掉 card 2 的索引条目，模拟「任务仍在队列、
+    // 挂载前复核（buildMountRow 的 index.has 检查）失败」的失效任务。
+    // （正常的 index.delete 会通知增量通道、把任务撤销成 continue 路径。）
+    ;(index as unknown as { entries: Map<number, unknown> }).entries.delete(2)
+
+    scheduler.frame()
+    // 失效任务不占预算：card 3 在同一帧完成真实挂载（此前会白白烧掉本帧配额）
+    expect(mountedIds()).toEqual([1, 3])
+    windowed.destroy()
+  })
+
   it('a queued unmount is cancelled when the entry re-enters the window (no flicker)', () => {
     const { index, addCard, viewRect, scheduler, windowed, mountedIds } = setup({
       maxOpsPerFrame: 1,
