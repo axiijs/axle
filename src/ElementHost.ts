@@ -13,12 +13,13 @@ import {
   destroyNode,
   eventTypeOfProp,
   insertBefore,
+  isAttachedTo,
   isEventProp,
   rawEventType,
   resolveTag,
 } from './leafer.js'
 import type { RefProp } from './types.js'
-import { assert } from './util.js'
+import { assert, runCleanupIsolated } from './util.js'
 
 function isReactiveValue(v: unknown): boolean {
   // atom 本身也是 function
@@ -84,6 +85,9 @@ export class ElementHost implements Host {
   /** 用户直接传入的 Leafer UI 实例，销毁时只解挂、不销毁 */
   rawChildren?: IUI[]
   refProp?: RefProp
+  /** ref 已经 attach 过（destroy 时才需要 detach，未 attach 的 ref 不应收到 null） */
+  refAttached?: boolean
+  removeAttachListener?: () => void
   constructor(
     public source: AxleNode,
     public placeholder: IUI | null,
@@ -203,7 +207,38 @@ export class ElementHost implements Host {
       this.staticParent.add(ui)
     }
 
-    attachRef(this.refProp, ui)
+    // 元素 ref 的连通契约与组件 ref / layoutEffect 一致（doc/02 §3.4）：执行时
+    // 保证元素已接入 root.container（ref 里拿得到 ui.leafer / 世界坐标）。
+    // 无 ref 的元素（虚拟化挂载主路径）只付一次指针判空，不做连通检查。
+    if (this.refProp) this.setupRef()
+  }
+  setupRef(): void {
+    const root = this.pathContext.root
+    if (!root.attached) {
+      // root attach 之前渲染的元素：attach 事件时执行。一定要保存退订函数，
+      // 元素在 attach 前被销毁（渲染事务回滚）时必须退订。
+      this.removeAttachListener = root.on('attach', () => this.attachRefNow(), { once: true })
+    } else if (isAttachedTo(this.ui!, root.container)) {
+      // 已连通（列表行 / 函数区域顶层元素的主路径）：立即执行
+      this.attachRefNow()
+    } else {
+      // 元素渲染在脱离场景图的子树里（children 先渲染、后插入的路径）：
+      // 延迟到子树连通后执行，与 ComponentHost 的 layoutEffect / 组件 ref 同一队列。
+      this.removeAttachListener = this.pathContext.root.deferAttached(this, () =>
+        this.attachRefNow(),
+      )
+    }
+  }
+  attachRefNow(): void {
+    this.refAttached = true
+    // CAUTION ref attach 抛错与 layoutEffect 同契约：有钩子时交给钩子（已渲染
+    //  区域保持不动、同批兄弟照常执行），无钩子时向上抛（初次渲染落在用户
+    //  render 调用栈上；flush 路径由所在渲染事务按无钩子契约处理）。
+    try {
+      attachRef(this.refProp, this.ui!)
+    } catch (e) {
+      if (!this.pathContext.root.dispatch('error', e)) throw e
+    }
   }
   renderChildren(parent: IUI, children: unknown[]): void {
     const childContext: PathContext = {
@@ -256,7 +291,14 @@ export class ElementHost implements Host {
     this.childHosts?.forEach((host) => host.destroy(true))
     // 用户持有的 UI 实例必须在子树销毁前解挂，避免被连带销毁
     this.rawChildren?.forEach((raw) => raw.remove())
-    detachRef(this.refProp)
+    this.removeAttachListener?.()
+    // CAUTION ref detach 是清理路径上的用户回调，绝不向上抛（同 runCleanupIsolated
+    //  的契约）：detach 抛错若从这里冒出去，会中断列表 splice 对同批兄弟行的
+    //  销毁、且本元素的 ui 不再被销毁——被 splice 摘出簿记的行 rebuildAllRows
+    //  已够不到，孤儿节点将永久残留（违反「簿记与场景图绝不失步」的硬契约）。
+    if (this.refAttached) {
+      runCleanupIsolated(this.pathContext.root, () => detachRef(this.refProp), 'element ref detach')
+    }
     // parentHandle 时也要销毁**脱离场景图**的 ui：渲染事务回滚（children 渲染
     // 抛错）时 ui 尚未插入场景图，区间回滚够不到它，父级的整体销毁也不会
     // 波及——不销毁则 leafer 资源（image 加载任务、事件表）泄漏。已入场景图

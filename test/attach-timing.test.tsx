@@ -177,6 +177,87 @@ describe('组件 layoutEffect 的连通时机（动态挂载）', () => {
     expect(refLog).toEqual([{ tag: 'exposed' }])
   })
 
+  it('嵌套在动态挂载元素里的元素 ref：attach 时子树已连通 root 容器', () => {
+    const log: boolean[] = []
+    const items = new RxList<number>([])
+    const { container } = mount(
+      <group>
+        {items.map(() => (
+          <group>
+            <rect width={5} ref={(ui: IUI | null) => ui && log.push(isAttachedTo(ui, container))} />
+          </group>
+        ))}
+      </group>,
+    )
+
+    items.push(1)
+    expect(log).toEqual([true])
+  })
+
+  it('真实 leafer 下元素 ref 里能拿到 ui.leafer（与组件 ref 同契约）', async () => {
+    const view = document.createElement('div')
+    document.body.appendChild(view)
+    const leafer = new Leafer({ view, width: 800, height: 600 })
+    await new Promise<void>((resolve) => leafer.waitReady(() => resolve()))
+
+    const leafersAtRef: (ILeaferBase | null | undefined)[] = []
+    const items = new RxList<number>([])
+    const { createRoot } = await import('@axiijs/axle')
+    const root = createRoot(leafer as unknown as IUI)
+    root.render(
+      <group>
+        {items.map(() => (
+          <group>
+            <rect width={5} ref={(ui: IUI | null) => ui && leafersAtRef.push(ui.leafer)} />
+          </group>
+        ))}
+      </group>,
+    )
+
+    items.push(1)
+    expect(leafersAtRef.length).toBe(1)
+    expect(leafersAtRef[0]).toBe(leafer)
+
+    root.destroy()
+    leafer.destroy()
+  })
+
+  it('连通前被销毁的元素（渲染回滚路径）：ref 不 attach 也不收到 null', async () => {
+    const refCalls: unknown[] = []
+    const badChild: unknown = { notAValidChild: true }
+    const show = atom(false)
+    const { root } = mount(
+      <group>
+        {() =>
+          show() ? (
+            <group>
+              <rect width={5} ref={(ui: unknown) => refCalls.push(ui)} />
+              {badChild as never}
+            </group>
+          ) : null
+        }
+      </group>,
+    )
+    root.on('error', () => {})
+    show(true)
+    await tick()
+    expect(refCalls).toEqual([])
+  })
+
+  it('root attach 之前渲染的元素 ref：attach 事件后才触发，且已连通', () => {
+    const seen: IUI[] = []
+    const { container } = mount(
+      <group>
+        <group>
+          <rect width={5} ref={(ui: IUI | null) => ui && seen.push(ui)} />
+        </group>
+      </group>,
+    )
+    // mount 内部完成 render + attach 派发：ref 已触发且触发时已连通
+    expect(seen.length).toBe(1)
+    expect(isAttachedTo(seen[0]!, container)).toBe(true)
+  })
+
   it('root attach 之前渲染的组件仍走一次性 attach 事件（初始渲染语义不变）', () => {
     const log: (IUI | null)[] = []
     const { container } = mount(

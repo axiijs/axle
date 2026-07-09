@@ -31,6 +31,8 @@ export class ComponentHost implements Host {
   layoutEffectDestroyHandles?: Set<() => unknown>
   frame?: ManualCleanup[]
   removeAttachListener?: () => void
+  /** ref 已经 attach 过（destroy 时才需要 detach，未 attach 的 ref 不应收到 null） */
+  refAttached?: boolean
   placeholder: IUI | null
   constructor(
     public type: Component,
@@ -153,7 +155,13 @@ export class ComponentHost implements Host {
   runLayoutEffect = (): void => {
     // 渲染之后才 attach ref，这样 ref 里能拿到场景图信息
     if (this.refProp) {
-      attachRef(this.refProp, { ...this.exposed })
+      this.refAttached = true
+      // CAUTION ref attach 是与 layoutEffect 同批执行的用户回调，错误契约必须
+      //  一致：有钩子时交给钩子——否则异常从 flushAttachQueue 冒出去，会把
+      //  渲染成功的所在区域误当成渲染失败回滚掉，且连坐同批其他组件的
+      //  layoutEffect / ref。无钩子时保持向上抛（同 layoutEffect 契约）。
+      //  闭包只在带 ref 的组件上分配，无 ref 的主路径零开销。
+      this.runWithErrorHook(() => attachRef(this.refProp, { ...this.exposed }))
     }
     this.layoutEffects?.forEach((layoutEffect) => {
       // CAUTION layoutEffect 抛错走 error 钩子（对齐 axii）：否则会打断同批
@@ -166,12 +174,18 @@ export class ComponentHost implements Host {
     })
   }
   destroy(parentHandle?: boolean): void {
-    detachRef(this.refProp)
+    const root = this.pathContext.root
+    // CAUTION ref detach 是清理路径上的用户回调，绝不向上抛（同 runCleanupIsolated
+    //  的契约）：detach 抛错若从这里冒出去，frame 清理 / innerHost 销毁 / attach
+    //  队列退订全部中断——组件的绑定 effect 继续存活，泄漏成还在响应数据更新的
+    //  「活孤儿」。未 attach 过的 ref 不 detach（不应收到 null）。
+    if (this.refAttached) {
+      runCleanupIsolated(root, () => detachRef(this.refProp), 'component ref detach')
+    }
     this.frame?.forEach((cleanup) => cleanup.destroy())
     this.innerHost?.destroy(parentHandle)
     // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：
     // 兄弟清理与剩余销毁流程（attach 队列退订、占位符移除）必须走完。
-    const root = this.pathContext.root
     this.layoutEffectDestroyHandles?.forEach((handle) =>
       runCleanupIsolated(root, handle, 'component layoutEffect cleanup'),
     )

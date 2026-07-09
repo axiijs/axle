@@ -32,8 +32,11 @@ type AxleNode = {
 
 对每个 prop（`children` 除外）按以下顺序判定：
 
-1. **`ref`**：函数 ref（`(ui) => void`）或 `{ current }` 对象。元素渲染完成后 attach，
-   destroy 时 detach（置 `null`）。
+1. **`ref`**：函数 ref（`(ui) => void`）或 `{ current }` 对象。attach 时机与组件 ref /
+   layoutEffect 同契约（见 3.4）：保证执行时元素已接入 `root.container`（ref 里拿得到
+   `ui.leafer` / 世界坐标）；已连通的挂载立即执行，脱离场景图的子树里渲染的元素走
+   root 连通队列。destroy 时 detach（置 `null`，只对 attach 过的 ref）。
+   ref 回调的错误契约见 3.4（attach 同 layoutEffect；detach 属清理路径，绝不向上抛）。
 2. **事件**（`/^on[A-Z]/`）：见 2.3。
 3. **响应式值**（`isAtom(value)` 或 `typeof value === 'function'`）：为该属性创建一个
    `LightBindingEffect`，立即执行一次并在依赖变化时同步重跑：`ui[key] = unwrap(value)`。
@@ -163,7 +166,11 @@ interface Host {
 EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 
 - **splice**：新行创建 Host 后插入到「插入点之后第一个已渲染行的 firstNode」之前
-  （找不到则 list 占位符之前）；被删行逐个 destroy。
+  （找不到则 list 占位符之前）；被删行逐个 destroy。**行销毁错误就地隔离**
+  （`destroyRowHost`）：行销毁运行在 data0 patch 里，向上抛会中断同批兄弟行的销毁并
+  触发 rebuildAllRows——而被删行已从簿记里 splice 出去，rebuild 够不到，未销毁的节点
+  将成为永久孤儿。销毁抛错时报告错误（error 钩子 / console.error）并对该行残留的
+  场景图节点做兜底清理。
 - **越界 `set`**（`list.set(i, v)`，`i >=` 当前长度，语义同 `arr[i] = v` 的稀疏数组）：
   空洞位补为空行（EmptyHost），簿记与数据始终等长且无 hole。
 - **patch 失败自愈**：结构性 patch 抛错（错误交给 error 钩子 / `console.error`）后
@@ -180,6 +187,11 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 
 行 Host 的 effect 不注册为本 computed 的子 effect（`pauseCollectChild`），行的销毁
 由 splice/destroy 显式完成。
+
+**开发期不变量自检**（`setListDiagnostics(true)`，对齐 axii 的 assertListInvariants）：
+每个 patch 批次后校验「簿记与数据等长且无 hole、每行首节点与占位符同在列表 branch 里」
+（zIndex 物理重排只改顺序不改集合，所以只校验集合级一致性）。失败走 error 钩子并
+`rebuildAllRows` 自愈。生产默认关闭，正常路径只多一次布尔检查。
 
 ### 3.4 ComponentHost
 
@@ -199,25 +211,28 @@ type RenderContext = {
   computed / effect，destroy 时统一清理。
 - `props.children` 透传 JSX children。
 - 组件上的 `ref` prop 拿到 `expose` 出来的对象（在 layoutEffect 阶段 attach，destroy 时置 null）。
-- **layoutEffect / 组件 ref 的连通时机**：保证执行时组件子树已接入 `root.container`
-  （layoutEffect 里能拿到 `ui.leafer` / 世界坐标）。root attach 前渲染的组件在
-  attach 事件时执行；attach 后动态挂载的组件，若渲染发生在脱离场景图的子树里
-  （元素 children 先渲染、后插入），会进入 root 的连通队列，由把子树接入场景图
-  的插入点（ElementHost 的占位符路径）flush。无 layoutEffect 且无 ref 的组件
-  完全跳过该机制（虚拟化高频挂载主路径零额外开销）。
+- **layoutEffect / ref 的连通时机**（组件 ref、元素 ref 同契约）：保证执行时所在子树
+  已接入 `root.container`（layoutEffect / ref 里能拿到 `ui.leafer` / 世界坐标）。
+  root attach 前渲染的在 attach 事件时执行；attach 后动态挂载的，若渲染发生在
+  脱离场景图的子树里（元素 children 先渲染、后插入），会进入 root 的连通队列，
+  由把子树接入场景图的插入点（ElementHost 的占位符路径）flush。无 layoutEffect
+  且无 ref 的组件 / 元素完全跳过该机制（虚拟化高频挂载主路径零额外开销）。
+  连通前被销毁的组件 / 元素取消队列条目，ref 不 attach 也不收到 detach 的 null。
 - 渲染抛错时：若 root 注册了 `error` 监听（`root.on('error', cb)`）则报告并把该区域渲染为空，
   否则向上抛出（与 axii 相同）。
 - **生命周期回调的错误契约**（对齐 axii 的 `runWithErrorHook`）：
-  - `useEffect` / `useLayoutEffect` 回调抛错：有钩子时交给钩子——**兄弟回调照常执行、
-    已渲染的区域保持不动**（layoutEffect 的错误不允许把渲染成功的区域误当成渲染
-    失败回滚，也不允许打断同一次连通队列 flush 里其它组件的 layoutEffect / ref）；
-    无钩子时保持向上抛（初次渲染落在用户 render 调用栈上；行/区域挂载中由所在
-    渲染事务按无钩子契约降级）。
+  - `useEffect` / `useLayoutEffect` 回调与 **ref attach**（组件 ref、元素 ref）抛错：
+    有钩子时交给钩子——**兄弟回调照常执行、已渲染的区域保持不动**（layoutEffect /
+    ref 的错误不允许把渲染成功的区域误当成渲染失败回滚，也不允许打断同一次连通
+    队列 flush 里其它组件的 layoutEffect / ref）；无钩子时保持向上抛（初次渲染落在
+    用户 render 调用栈上；行/区域挂载中由所在渲染事务按无钩子契约降级）。
   - **清理回调**（`onCleanup` / effect 清理 / layoutEffect 清理、函数 child 的
-    `onCleanup`）抛错：**绝不向上抛**——有钩子交给钩子、无钩子 `console.error`，
-    兄弟清理与剩余销毁流程必须走完。这是与 axii 的有意差异：清理经常运行在
-    data0 patch / 微任务里，向上抛会把单行的清理错误升级为整列表的
+    `onCleanup`、**ref detach**）抛错：**绝不向上抛**——有钩子交给钩子、无钩子
+    `console.error`，兄弟清理与剩余销毁流程必须走完。这是与 axii 的有意差异：清理
+    经常运行在 data0 patch / 微任务里，向上抛会把单行的清理错误升级为整列表的
     `rebuildAllRows`，并中断兄弟清理造成泄漏；且销毁没有可回滚的「事务」。
+    ref detach 抛错尤其危险：它在列表 splice 的行销毁路径上，中断销毁会让被摘出
+    簿记的行成为永久孤儿（RxListHost 另有行级隔离 + 节点兜底清理，见 3.3）。
 
 ### 3.5 PathContext
 
