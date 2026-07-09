@@ -235,6 +235,17 @@ Phase 1/2 的架构已经把响应式层做到了正确的形状（见
   内存成本白付，屏外卡片根本不动），或用一个覆盖全部 atom 的 computed
   （任何一张卡动了整体重算）。
 - 索引是纯数据层对象，不参与渲染，不在任何交互热路径上做全量重建。
+- **bounds 必须是有限数（写入口断言）**：`set` 对四个字段做 `Number.isFinite`
+  检查。Infinity / 超大值会让 cell 循环失控（OOM 挂死页面）；NaN 会让条目
+  落进 NaN cell、对所有查询永久不可见（卡片静默消失且事故点与症状点相隔
+  甚远）。write-through 是唯一写入口，事故必须暴露在写入点。
+- **查询成本与查询矩形面积解耦**：`forEachIn` / `forEachCell` 先把 cell
+  循环 clamp 进「已占用 cell 包围盒」（grow-only 增量维护），并在查询范围
+  覆盖的 cell 数超过实际占用数时回退为遍历占用 cell 表按范围过滤——成本
+  上限是 O(占用 cell 数) 而不是 O(矩形覆盖 cell 数)。否则极限缩小视野
+  （scale 0.01 时 enterRect 可达数十万 px 宽）会让窗口化重算与 DotLayer
+  重绘每帧对几十万个空 cell 做 Map 查询，且随缩小倍数平方增长；查询矩形
+  含 Infinity（viewRect 除以异常 scale）时更是无限循环。
 
 ### 2.2 视口窗口化列表（axle 新模块，暂名 `rxWindowedList`）
 
