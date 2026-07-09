@@ -187,4 +187,59 @@ describe('初次渲染失败后的场景图清洁（无孤儿占位符）', () =
     root.destroy()
     expect(container.children?.length ?? 0).toBe(0)
   })
+
+  // 以下三个用例针对「createHost 分发自身抛错（非法 child 类型）」：
+  // 此时 innerHost / childHost / root.host 尚未进簿记，destroy 够不到刚插入的
+  // 占位符，必须由渲染事务就地清理（doc/02 §3.1「未消费的占位符也在事务内」）。
+
+  it('组件返回非法 child 类型（无钩子）→ root.destroy() 后容器为空（无孤儿 innerPlaceholder）', () => {
+    const container = new Group() as unknown as IUI
+    const root = createRoot(container)
+    function Bad() {
+      return { not: 'a valid child' }
+    }
+    expect(() => root.render(<Bad />)).toThrow('unknown child type')
+    root.destroy()
+    expect(container.children ?? []).toEqual([])
+  })
+
+  it('根级静态数组含非法 item（无钩子）→ root.destroy() 后容器为空（无孤儿 itemPlaceholder）', () => {
+    const container = new Group() as unknown as IUI
+    const root = createRoot(container)
+    expect(() =>
+      root.render([<rect width={1} />, { bad: true }, <rect width={3} />]),
+    ).toThrow('unknown child type')
+    root.destroy()
+    expect(container.children ?? []).toEqual([])
+  })
+
+  it('root.render 非法顶层节点（无钩子）→ root.destroy() 后容器为空（无孤儿 root 占位符）', () => {
+    const container = new Group() as unknown as IUI
+    const root = createRoot(container)
+    expect(() => root.render({ bad: true })).toThrow('unknown child type')
+    root.destroy()
+    expect(container.children ?? []).toEqual([])
+  })
+
+  it('行内组件返回非法 child（有钩子）→ 行降级空行、簿记完好、destroy 后容器为空', () => {
+    const container = new Group() as unknown as IUI
+    const root = createRoot(container)
+    const onError = vi.fn()
+    root.on('error', onError)
+    const items = new RxList<number>([1])
+    function BadRow() {
+      return { invalid: true }
+    }
+    root.render(
+      <group>{items.map((v) => (v === 1 ? <BadRow /> : <text text={String(v)} />))}</group>,
+    )
+    expect(onError).toHaveBeenCalledTimes(1)
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!).length).toBe(0) // 行降级为空行
+    // 簿记与场景图必须仍一致：后续 splice 照常工作
+    items.push(2)
+    expect(texts(group!)).toEqual(['2'])
+    root.destroy()
+    expect(container.children ?? []).toEqual([])
+  })
 })

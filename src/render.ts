@@ -1,7 +1,7 @@
 import type { IUI } from 'leafer-ui'
 import type { Host, PathContext } from './Host.js'
 import { createHost } from './createHost.js'
-import { createPlaceholder, isAttachedTo } from './leafer.js'
+import { createPlaceholder, destroyNode, isAttachedTo } from './leafer.js'
 import { assert } from './util.js'
 
 type EventCallback = (arg?: unknown) => void
@@ -59,7 +59,16 @@ export function createRoot(container: IUI): Root {
       const placeholder = createPlaceholder('root')
       container.add(placeholder)
       const pathContext: PathContext = { root, hostPath: null }
-      root.host = createHost(node, placeholder, pathContext)
+      // CAUTION createHost 分发自身抛错（非法顶层 child 类型）时必须就地清掉
+      //  刚插入的占位符：此刻 root.host 尚未赋值，destroy() 够不到它，会泄漏成
+      //  永久孤儿节点（违反「未消费的占位符也在事务内」，doc/02 §3.1）。
+      //  render 每 root 只执行一次，try 栈帧不在任何热路径上。
+      try {
+        root.host = createHost(node, placeholder, pathContext)
+      } catch (e) {
+        destroyNode(placeholder)
+        throw e
+      }
       root.host.render()
       root.attached = true
       root.dispatch('attach')

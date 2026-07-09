@@ -153,6 +153,12 @@ interface Host {
   innerHost 自带常驻占位符，区间永远非空），render 完成后**销毁自己的占位符**、
   区间委托给 innerHost——虚拟化滚动中组件反复挂卸，每个组件实例少一个常驻
   场景图节点。
+- **`createHost` 分发自身抛错（非法 child 类型）也在事务内**：此刻新 host 尚未
+  进任何簿记（`innerHost` / `childHosts` / `root.host` 未赋值），destroy 够不到
+  刚插入的占位符——分发方（`ComponentHost.render` / `StaticArrayHost.render` /
+  `root.render`）必须就地清掉该占位符再向上抛。列表行 / 函数区域路径本有
+  `(boundary, anchor)` 区间回滚覆盖，此清理让契约不依赖上层兜底（root 直系
+  路径没有区间回滚）。正常路径只多一个 try 栈帧。
 
 ### 3.2 FunctionHost
 
