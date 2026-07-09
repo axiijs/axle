@@ -7,6 +7,8 @@ import type { Root } from './render.js'
  * 占位符所有权约定（谁的区间结构可变，谁保留占位符）：
  * - ElementHost / PrimitiveHost / AtomHost / RawUIHost：内容节点稳定，
  *   render 完成后立刻移除占位符，getNodes() 只含内容节点。
+ *   未消费的占位符也在渲染事务内：render 中途抛错后走非 parentHandle
+ *   销毁时必须清掉（parentHandle 路径由祖先整体销毁 / 区间回滚覆盖）。
  * - EmptyHost / FunctionHost / StaticArrayHost / RxListHost：
  *   区间结构可变（或可能为空），占位符常驻，是 getNodes() 的最后一个节点。
  * - ComponentHost：组件只执行一次，区间完全由 innerHost 决定（结构可变的

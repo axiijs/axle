@@ -192,6 +192,8 @@ export class ElementHost implements Host {
         //  该依赖的每次写入都会重跑抛错的 getter、把异常抛进 data0 的
         //  trigger session（击穿 runSimplePatch，见 render.ts 的 CAUTION）。
         //  纯语句重排 + 一个 try/finally 栈帧，挂载热路径零新增分配。
+        //  这是与 axii 的有意差异：StaticHost.collectReactiveAttr 是先 run
+        //  后 push，存在同样的泄漏窗口（doc/02 §2.1）。
         attrEffects.push(effect)
         try {
           effect.run()
