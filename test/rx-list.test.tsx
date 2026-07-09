@@ -174,6 +174,23 @@ describe('RxListHost explicit key change', () => {
     items.unshift('z')
     expect(rowTexts(group)).toEqual(['z', 'filled', 'x', 'y'])
   })
+
+  it('set() 负下标被忽略：无幽灵行、不泄漏节点、后续 patch 正常', () => {
+    // data0 的 set(-1, v) 只是 data[-1] = v 的属性赋值，不改变列表长度、
+    // 不对应任何行——不能给 hosts[-1] 挂行、也不能往场景图插占位节点。
+    const items = new RxList<string>(['a', 'b'])
+    const { group } = listGroup(items)
+    const nodeCountBefore = (group.children ?? []).length
+
+    items.set(-1, 'ghost')
+    expect(rowTexts(group)).toEqual(['a', 'b'])
+    expect((group.children ?? []).length).toBe(nodeCountBefore)
+
+    items.push('c')
+    expect(rowTexts(group)).toEqual(['a', 'b', 'c'])
+    items.splice(0, 1)
+    expect(rowTexts(group)).toEqual(['b', 'c'])
+  })
 })
 
 describe('RxListHost reorder', () => {
