@@ -11,7 +11,7 @@ export function assert(condition: unknown, message: string): asserts condition {
  * 统一错误出口：交给 root error 钩子，未注册钩子时 console.error，
  * **绝不向上抛**。
  *
- * CAUTION 这是与 axii 的 runWithErrorHook（无钩子时向上抛）的有意差异：
+ * CAUTION 与挂载期回调（无钩子时向上抛）不同，清理路径绝不向上抛：
  *  清理回调经常运行在 data0 patch / 微任务里（列表行被 splice 删除、
  *  函数区域重算前的清理），向上抛会把单行的清理错误升级为整列表的
  *  rebuildAllRows（applyPatch 的兜底自愈），并中断兄弟清理与剩余销毁
@@ -28,7 +28,7 @@ export function runCleanupIsolated(root: Root, cleanup: () => unknown, what: str
   }
 }
 
-/** 一层浅比较（移植自 axii 的 util.shallowEqual），用于反向同步的写前去抖 */
+/** 一层浅比较，用于反向同步的写前去抖 */
 export function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false

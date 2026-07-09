@@ -45,8 +45,7 @@ type AxleNode = {
      `attrEffects` 再首次 `run()`。初始求值抛错时依赖已被追踪，若 effect 不在簿记里，
      渲染事务的回滚（destroy）够不到它——泄漏成继续响应依赖的活效应，之后对该依赖的
      每次写入都会把异常抛进 data0 的 trigger session（击穿 `runSimplePatch`，整个
-     依赖图区域瘫痪）。这是与 axii `StaticHost.collectReactiveAttr`（先 run 后 push）
-     的**有意差异**，axii 存在同样的泄漏窗口。
+     依赖图区域瘫痪）。
    - **「初次渲染」的判定依据是调用栈**（初始 `run()` 是否已返回），与「首次求值是否
      成功」解耦：error 钩子消费掉初始错误后，后续更新已运行在 trigger session 里，
      即使该绑定从未成功求值过，更新错误也必须降级为 `console.error` + 跳过
@@ -54,7 +53,7 @@ type AxleNode = {
      `AtomHost.rendered` / `FunctionHost.rendered` 同一语义。
 4. **静态值**：直接进构造数据 `UICreator.get(tag, data)`。
 
-事件绑定是一次性的、**不响应式**（与 axii 相同的设计取舍）。
+事件绑定是一次性的、**不响应式**（handler 内部自己读响应式条件）。
 
 ### 2.2 children
 
@@ -157,8 +156,6 @@ interface Host {
 
 ### 3.2 FunctionHost
 
-移植 axii 语义：
-
 - 用 `DeferredBindingEffect`：首次同步求值渲染，之后依赖触发合并到微任务里重算
   （同一 tick 多次触发只重算一次）。
 - **文本快速路径**：函数返回原始值（`string/number/boolean/null`）时，只创建 / 原地更新
@@ -177,8 +174,8 @@ interface Host {
 
 ### 3.3 RxListHost
 
-直接订阅 `RxList` 的 patch（与 axii 相同的 `computed` + `manualTrack(METHOD /
-EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
+直接订阅 `RxList` 的 patch（`computed` + `manualTrack(METHOD /
+EXPLICIT_KEY_CHANGE)`），用普通数组维护行 Host：
 
 - **splice**：新行创建 Host 后插入到「插入点之后第一个已渲染行的 firstNode」之前
   （找不到则 list 占位符之前）；被删行逐个 destroy。**start 参数按
@@ -208,7 +205,7 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 行 Host 的 effect 不注册为本 computed 的子 effect（`pauseCollectChild`），行的销毁
 由 splice/destroy 显式完成。
 
-**开发期不变量自检**（`setListDiagnostics(true)`，对齐 axii 的 assertListInvariants）：
+**开发期不变量自检**（`setListDiagnostics(true)`）：
 每个 patch 批次后校验：
 
 - **集合级**：簿记与数据等长且无 hole、每行首节点与占位符同在列表 branch 里；
@@ -245,8 +242,8 @@ type RenderContext = {
   且无 ref 的组件 / 元素完全跳过该机制（虚拟化高频挂载主路径零额外开销）。
   连通前被销毁的组件 / 元素取消队列条目，ref 不 attach 也不收到 detach 的 null。
 - 渲染抛错时：若 root 注册了 `error` 监听（`root.on('error', cb)`）则报告并把该区域渲染为空，
-  否则向上抛出（与 axii 相同）。
-- **生命周期回调的错误契约**（对齐 axii 的 `runWithErrorHook`）：
+  否则向上抛出。
+- **生命周期回调的错误契约**：
   - `useEffect` / `useLayoutEffect` 回调与 **ref attach**（组件 ref、元素 ref）抛错：
     有钩子时交给钩子——**兄弟回调照常执行、已渲染的区域保持不动**（layoutEffect /
     ref 的错误不允许把渲染成功的区域误当成渲染失败回滚，也不允许打断同一次连通
@@ -254,7 +251,7 @@ type RenderContext = {
     用户 render 调用栈上；行/区域挂载中由所在渲染事务按无钩子契约降级）。
   - **清理回调**（`onCleanup` / effect 清理 / layoutEffect 清理、函数 child 的
     `onCleanup`、**ref detach**）抛错：**绝不向上抛**——有钩子交给钩子、无钩子
-    `console.error`，兄弟清理与剩余销毁流程必须走完。这是与 axii 的有意差异：清理
+    `console.error`，兄弟清理与剩余销毁流程必须走完。与挂载期回调不同，清理
     经常运行在 data0 patch / 微任务里，向上抛会把单行的清理错误升级为整列表的
     `rebuildAllRows`，并中断兄弟清理造成泄漏；且销毁没有可回滚的「事务」。
     ref detach 抛错尤其危险：它在列表 splice 的行销毁路径上，中断销毁会让被摘出

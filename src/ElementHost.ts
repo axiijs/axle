@@ -166,7 +166,7 @@ export class ElementHost implements Host {
       for (const [key, value] of reactiveProps) {
         // CAUTION 属性更新抛错：外部通过 root.on('error') 注册了处理器时报告
         //  错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），与
-        //  ComponentHost/FunctionHost 的错误钩子语义一致（对齐 axii 的同名修复）。
+        //  ComponentHost/FunctionHost 的错误钩子语义一致。
         //  未注册处理器时只有初始求值（用户主动的 render 调用栈上）保持向上抛；
         //  后续更新运行在 data0 的 trigger session 里，向上抛会让异常从任意
         //  model 写入点冒出来、并中断同一 session 里其余绑定的本次更新，
@@ -192,8 +192,6 @@ export class ElementHost implements Host {
         //  该依赖的每次写入都会重跑抛错的 getter、把异常抛进 data0 的
         //  trigger session（击穿 runSimplePatch，见 render.ts 的 CAUTION）。
         //  纯语句重排 + 一个 try/finally 栈帧，挂载热路径零新增分配。
-        //  这是与 axii 的有意差异：StaticHost.collectReactiveAttr 是先 run
-        //  后 push，存在同样的泄漏窗口（doc/02 §2.1）。
         attrEffects.push(effect)
         try {
           effect.run()

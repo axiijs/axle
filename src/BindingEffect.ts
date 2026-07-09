@@ -1,7 +1,7 @@
 import { ManualCleanup, ReactiveEffect } from 'data0'
 
 /**
- * 渲染热路径专用的轻量绑定 effect（移植自 axii 的 LightBindingEffect）。
+ * 渲染热路径专用的轻量绑定 effect。
  *
  * 相比 data0 的 `computed`/`autorun`，没有 status/updatedAt atom、applyPatch、
  * 状态机等分配，依赖追踪/触发/父子 effect 收集与 Computed 完全一致，

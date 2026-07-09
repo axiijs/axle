@@ -22,7 +22,7 @@ function isHostRendered(host: Host): boolean {
 let listDiagnosticsEnabled = false
 
 /**
- * 开发期列表不变量自检开关（对齐 axii 的 assertListInvariants）：开启后每个
+ * 开发期列表不变量自检开关：开启后每个
  * patch 批次结束时校验簿记与场景图的一致性，失败走 error 钩子并触发
  * rebuildAllRows 自愈。生产默认关闭，正常路径只多一次布尔检查。
  */
