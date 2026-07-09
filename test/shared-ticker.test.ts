@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createSharedTicker } from '@axiijs/axle'
 
 function manualFrames() {
@@ -101,6 +101,32 @@ describe('createSharedTicker (05 号文档 §7.1 单一全局 ticker)', () => {
     frames.frame()
     expect(ticks).toBe(2)
     ticker.destroy()
+  })
+
+  it('a throwing callback neither stalls the loop nor starves other subscribers', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const frames = manualFrames()
+      const ticker = createSharedTicker({ schedule: frames.schedule.bind(frames) })
+      let healthyTicks = 0
+      // 抛错回调排在健康回调之前（Set 按插入序遍历）：
+      // 同帧的后续订阅者不能被连坐，循环也必须继续续调度
+      ticker.add(() => {
+        throw new Error('draw failed')
+      })
+      ticker.add(() => healthyTicks++)
+
+      frames.frame()
+      expect(healthyTicks).toBe(1)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(frames.pending).toBe(1) // 循环没有停摆
+
+      frames.frame()
+      expect(healthyTicks).toBe(2)
+      ticker.destroy()
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('destroy cancels the loop', () => {

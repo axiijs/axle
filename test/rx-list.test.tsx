@@ -90,6 +90,23 @@ describe('RxListHost splice', () => {
     expect(rowTexts(group)).toEqual(['again'])
   })
 
+  it('negative start index follows Array.prototype.splice semantics', () => {
+    // data0 透传未归一化的 argv，axle 侧必须自己归一化，否则簿记与场景图脱同步
+    const items = new RxList(['a', 'b', 'c'])
+    const { group } = listGroup(items)
+    items.splice(-1, 0, 'x') // 在最后一项之前插入
+    expect(items.data).toEqual(['a', 'b', 'x', 'c'])
+    expect(rowTexts(group)).toEqual(['a', 'b', 'x', 'c'])
+
+    items.splice(-2, 1) // 删除倒数第二项
+    expect(items.data).toEqual(['a', 'b', 'c'])
+    expect(rowTexts(group)).toEqual(['a', 'b', 'c'])
+
+    items.splice(-100, 1, 'A') // 越界负下标钳到 0
+    expect(items.data).toEqual(['A', 'b', 'c'])
+    expect(rowTexts(group)).toEqual(['A', 'b', 'c'])
+  })
+
   it('destroys deleted row bindings', () => {
     const first = atom('a')
     const items = new RxList<unknown>([first, 'b'])

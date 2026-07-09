@@ -75,7 +75,16 @@ export function createSharedTicker(options?: {
       const time = typeof frameNow === 'number' ? frameNow : now()
       if (time - lastTick >= minInterval) {
         lastTick = time
-        for (const callback of callbacks) callback(time)
+        for (const callback of callbacks) {
+          // CAUTION 逐回调隔离异常：一个表面的绘制失败（视频解码错误等）
+          //  不能连坐同帧的其它订阅者，更不能跳过末尾的续调度让整个循环
+          //  永久停摆（所有视频/动画表面一起冻结，直到下一次 add 才复活）。
+          try {
+            callback(time)
+          } catch (error) {
+            console.error('[axle] shared ticker callback failed:', error)
+          }
+        }
       }
     }
     // 没有订阅者时停摆，等下一次 add 重启

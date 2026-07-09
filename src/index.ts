@@ -1,4 +1,7 @@
-export const AXLE_VERSION = '0.0.0'
+// 构建时由 tsup 的 define 注入 package.json 的版本号；
+// 直接跑 src（测试 / playground）时没有注入，回退为 dev 标记。
+declare const __AXLE_VERSION__: string | undefined
+export const AXLE_VERSION = typeof __AXLE_VERSION__ === 'string' ? __AXLE_VERSION__ : '0.0.0-dev'
 
 export { createRoot } from './render.js'
 export type { Root } from './render.js'

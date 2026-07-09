@@ -193,6 +193,42 @@ describe('响应式属性绑定抛错（对齐 root.on("error") 语义）', () =
       ),
     ).toThrow('boom')
   })
+
+  it('未注册钩子时更新抛错 console.error 报告 + 跳过，不从写入点抛出、不连坐同 session 的其它绑定', () => {
+    // CAUTION 更新运行在 data0 的 trigger session 里：若向上抛，异常会从
+    //  任意一次 model 写入（shared(2)）冒出来，且同一 session 里排在后面的
+    //  其它绑定的本次更新被整体跳过。无钩子时的契约是 console.error + 跳过。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const shared = atom(1)
+      const { container } = mount(
+        <group>
+          <rect
+            width={() => {
+              const w = shared()
+              if (w === 2) throw new Error('width failed')
+              return w
+            }}
+          />
+          <text text={() => String(shared())} />
+        </group>,
+      )
+      const [group] = contentChildren(container)
+      const [rect, text] = contentChildren(group!)
+      expect(rect!.width).toBe(1)
+
+      expect(() => shared(2)).not.toThrow() // 写入点不再被渲染层异常打断
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(rect!.width).toBe(1) // 抛错绑定跳过本次更新
+      expect((text as IText).text).toBe('2') // 兄弟绑定不被连坐
+
+      shared(3) // effect 保持活跃，依赖恢复后继续更新
+      expect(rect!.width).toBe(3)
+      expect((text as IText).text).toBe('3')
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
 })
 
 describe('atom 文本更新抛错（对齐 root.on("error") 语义）', () => {
@@ -213,5 +249,31 @@ describe('atom 文本更新抛错（对齐 root.on("error") 语义）', () => {
 
     value('recovered')
     expect((text as IText).text).toBe('recovered')
+  })
+
+  it('未注册钩子时 toString 抛错 console.error 报告 + 保持旧文本，不从写入点抛出', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const value = atom<unknown>('ok')
+      const { container } = mount(<group>{value}</group>)
+      const [group] = contentChildren(container)
+      const [text] = contentChildren(group!)
+      expect((text as IText).text).toBe('ok')
+
+      expect(() =>
+        value({
+          toString() {
+            throw new Error('bad text')
+          },
+        }),
+      ).not.toThrow()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect((text as IText).text).toBe('ok')
+
+      value('recovered')
+      expect((text as IText).text).toBe('recovered')
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 })

@@ -5,7 +5,9 @@ import { contentChildren, contentTags, mount } from './helpers.js'
 
 describe('createRoot', () => {
   it('exposes the package version', () => {
-    expect(AXLE_VERSION).toBe('0.0.0')
+    // 直接跑 src 没有 tsup define 注入，回退为 dev 标记；
+    // 构建产物里由 tsup 注入 package.json 的真实版本号
+    expect(AXLE_VERSION).toBe('0.0.0-dev')
   })
 
   it('renders into a Group container', () => {

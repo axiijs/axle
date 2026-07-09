@@ -234,6 +234,30 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('deleted entries unmount first, before farther-away survivors', () => {
+    const { addCard, index, viewRect, scheduler, windowed } = setup({
+      maxOpsPerFrame: 1,
+      buffer: 0,
+      hysteresis: 0,
+    })
+    addCard(1, 10, 10)
+    addCard(2, 45, 45) // 视口中心附近
+    addCard(3, 80, 80)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(3)
+
+    // 同一帧里：视口内的 2 被删除，同时视口移走让 1/3 也出窗。
+    // 被删除的条目可能正在屏幕正中，是最不该残留的内容，必须最先卸载，
+    // 而不是按「距离 -1」被排到整批卸载的队尾。
+    index.delete(2)
+    viewRect({ x: 1000, y: 1000, width: 100, height: 100 })
+    scheduler.frame() // 预算 1：本帧只允许一个卸载
+    expect(windowed.rows.data.map((row) => row.id)).not.toContain(2)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(0)
+    windowed.destroy()
+  })
+
   it('pins (trigger 4) keep entries alive outside the window', () => {
     const pins = atom<number[]>([])
     const { addCard, scheduler, windowed, mountedIds } = setup({ pins: () => pins() })
