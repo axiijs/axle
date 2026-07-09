@@ -80,6 +80,8 @@ type AxleNode = {
 | `onKeyDown`                            | `key.down`                         |
 
 未收录的 `onXxx` 直接报错（避免拼错事件名静默失效）。
+事件 prop 的值为 `null` / `undefined` 时按未传处理（`onTap={cond ? fn : undefined}`
+的条件处理器惯用法）；其余非函数值仍然报错。
 同时支持 **原始事件名逃生舱**：`on:tap={handler}` / `on:pointer-menu={handler}`
 （JSX 属性名不允许 `.`，用 `-` 代替；`on:` 后面的字符串替换后原样传给 `ui.on(...)`），
 用于别名表未覆盖的事件（如 Leafer 的生命周期事件）。
