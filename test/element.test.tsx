@@ -107,9 +107,7 @@ describe('events', () => {
 
   it('treats null/undefined event props as absent (conditional handler idiom)', () => {
     // onTap={cond ? fn : undefined} 是 JSX 的惯用法，不应在挂载时报错
-    const { container } = mount(
-      <rect onTap={undefined} on:tap={undefined} onPointerDown={null as never} />,
-    )
+    const { container } = mount(<rect onTap={undefined} on:tap={undefined} onPointerDown={null} />)
     const [rect] = contentChildren(container)
     expect(rect!.tag).toBe('Rect')
     // 不产生任何监听：emit 不抛错、也没有绑定副作用
