@@ -119,11 +119,15 @@ export class ElementHost implements Host {
         continue
       }
       if (key.startsWith('on:')) {
+        // null/undefined 是条件事件处理器的惯用法（onTap={cond ? fn : undefined}），
+        // 按未传处理。其余非函数值仍然报错（拼错/传错值不允许静默失效）。
+        if (value === null || value === undefined) continue
         assert(typeof value === 'function', `event prop "${key}" must be a function`)
         eventBindings.push([rawEventType(key), value as (e: unknown) => void])
         continue
       }
       if (isEventProp(key)) {
+        if (value === null || value === undefined) continue
         assert(typeof value === 'function', `event prop "${key}" must be a function`)
         eventBindings.push([eventTypeOfProp(key), value as (e: unknown) => void])
         continue

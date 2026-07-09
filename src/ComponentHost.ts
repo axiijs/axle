@@ -99,10 +99,21 @@ export class ComponentHost implements Host {
 
     const innerPlaceholder = createPlaceholder('component')
     insertBefore(innerPlaceholder, this.placeholder!)
-    this.innerHost = createHost(node, innerPlaceholder, {
-      ...this.pathContext,
-      hostPath: linkHost(this, this.pathContext.hostPath),
-    })
+    // CAUTION createHost 分发自身抛错（组件返回非法 child 类型）时必须就地清掉
+    //  刚插入的 innerPlaceholder：此刻 this.innerHost 尚未赋值、没有任何簿记指向
+    //  它，destroy() 够不到——在 root 直系路径上（无区间回滚兜底）会泄漏成永久
+    //  孤儿节点（违反「未消费的占位符也在事务内」，doc/02 §3.1）。列表行 / 函数
+    //  区域路径本有区间回滚覆盖，这里的清理让契约不依赖上层兜底。
+    //  正常挂载路径只多一个 try 栈帧，零新增分配，成本只在错误路径上。
+    try {
+      this.innerHost = createHost(node, innerPlaceholder, {
+        ...this.pathContext,
+        hostPath: linkHost(this, this.pathContext.hostPath),
+      })
+    } catch (e) {
+      destroyNode(innerPlaceholder)
+      throw e
+    }
     this.innerHost.render()
 
     // 占位符省略：组件只执行一次，interval 完全由 innerHost 决定

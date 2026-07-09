@@ -71,52 +71,58 @@ type ReactiveInputData<T> = {
   [K in keyof Omit<T, 'children'>]?: MaybeReactive<Omit<T, 'children'>[K]>
 }
 
+/**
+ * 事件处理器允许 `null` / `undefined`（`onTap={cond ? fn : undefined}` 的
+ * 条件处理器惯用法，运行时按未传处理），配合 exactOptionalPropertyTypes。
+ */
+type EventHandler<E> = ((e: E) => void) | null | undefined
+
 interface EventProps {
-  onPointerDown?: (e: LeaferPointerEvent) => void
-  onPointerMove?: (e: LeaferPointerEvent) => void
-  onPointerUp?: (e: LeaferPointerEvent) => void
-  onPointerOver?: (e: LeaferPointerEvent) => void
-  onPointerOut?: (e: LeaferPointerEvent) => void
-  onPointerEnter?: (e: LeaferPointerEvent) => void
-  onPointerLeave?: (e: LeaferPointerEvent) => void
-  onTap?: (e: LeaferPointerEvent) => void
-  onDoubleTap?: (e: LeaferPointerEvent) => void
-  onClick?: (e: LeaferPointerEvent) => void
-  onDoubleClick?: (e: LeaferPointerEvent) => void
-  onLongPress?: (e: LeaferPointerEvent) => void
-  onLongTap?: (e: LeaferPointerEvent) => void
-  onMenu?: (e: LeaferPointerEvent) => void
-  onMenuTap?: (e: LeaferPointerEvent) => void
-  onDragStart?: (e: LeaferDragEvent) => void
-  onDrag?: (e: LeaferDragEvent) => void
-  onDragEnd?: (e: LeaferDragEvent) => void
-  onDragOver?: (e: LeaferDragEvent) => void
-  onDragOut?: (e: LeaferDragEvent) => void
-  onDragEnter?: (e: LeaferDragEvent) => void
-  onDragLeave?: (e: LeaferDragEvent) => void
-  onDrop?: (e: LeaferDropEvent) => void
-  onMoveStart?: (e: LeaferMoveEvent) => void
-  onMove?: (e: LeaferMoveEvent) => void
-  onMoveEnd?: (e: LeaferMoveEvent) => void
-  onZoomStart?: (e: LeaferZoomEvent) => void
-  onZoom?: (e: LeaferZoomEvent) => void
-  onZoomEnd?: (e: LeaferZoomEvent) => void
-  onRotateStart?: (e: LeaferRotateEvent) => void
-  onRotate?: (e: LeaferRotateEvent) => void
-  onRotateEnd?: (e: LeaferRotateEvent) => void
-  onSwipe?: (e: LeaferSwipeEvent) => void
-  onSwipeLeft?: (e: LeaferSwipeEvent) => void
-  onSwipeRight?: (e: LeaferSwipeEvent) => void
-  onSwipeUp?: (e: LeaferSwipeEvent) => void
-  onSwipeDown?: (e: LeaferSwipeEvent) => void
-  onKeyDown?: (e: LeaferKeyEvent) => void
-  onKeyHold?: (e: LeaferKeyEvent) => void
-  onKeyUp?: (e: LeaferKeyEvent) => void
+  onPointerDown?: EventHandler<LeaferPointerEvent>
+  onPointerMove?: EventHandler<LeaferPointerEvent>
+  onPointerUp?: EventHandler<LeaferPointerEvent>
+  onPointerOver?: EventHandler<LeaferPointerEvent>
+  onPointerOut?: EventHandler<LeaferPointerEvent>
+  onPointerEnter?: EventHandler<LeaferPointerEvent>
+  onPointerLeave?: EventHandler<LeaferPointerEvent>
+  onTap?: EventHandler<LeaferPointerEvent>
+  onDoubleTap?: EventHandler<LeaferPointerEvent>
+  onClick?: EventHandler<LeaferPointerEvent>
+  onDoubleClick?: EventHandler<LeaferPointerEvent>
+  onLongPress?: EventHandler<LeaferPointerEvent>
+  onLongTap?: EventHandler<LeaferPointerEvent>
+  onMenu?: EventHandler<LeaferPointerEvent>
+  onMenuTap?: EventHandler<LeaferPointerEvent>
+  onDragStart?: EventHandler<LeaferDragEvent>
+  onDrag?: EventHandler<LeaferDragEvent>
+  onDragEnd?: EventHandler<LeaferDragEvent>
+  onDragOver?: EventHandler<LeaferDragEvent>
+  onDragOut?: EventHandler<LeaferDragEvent>
+  onDragEnter?: EventHandler<LeaferDragEvent>
+  onDragLeave?: EventHandler<LeaferDragEvent>
+  onDrop?: EventHandler<LeaferDropEvent>
+  onMoveStart?: EventHandler<LeaferMoveEvent>
+  onMove?: EventHandler<LeaferMoveEvent>
+  onMoveEnd?: EventHandler<LeaferMoveEvent>
+  onZoomStart?: EventHandler<LeaferZoomEvent>
+  onZoom?: EventHandler<LeaferZoomEvent>
+  onZoomEnd?: EventHandler<LeaferZoomEvent>
+  onRotateStart?: EventHandler<LeaferRotateEvent>
+  onRotate?: EventHandler<LeaferRotateEvent>
+  onRotateEnd?: EventHandler<LeaferRotateEvent>
+  onSwipe?: EventHandler<LeaferSwipeEvent>
+  onSwipeLeft?: EventHandler<LeaferSwipeEvent>
+  onSwipeRight?: EventHandler<LeaferSwipeEvent>
+  onSwipeUp?: EventHandler<LeaferSwipeEvent>
+  onSwipeDown?: EventHandler<LeaferSwipeEvent>
+  onKeyDown?: EventHandler<LeaferKeyEvent>
+  onKeyHold?: EventHandler<LeaferKeyEvent>
+  onKeyUp?: EventHandler<LeaferKeyEvent>
 }
 
 /** `on:` 原始事件名逃生舱（`-` 代替 `.`），例如 `on:pointer-down` → `pointer.down` */
 type RawEventProps = {
-  [K in `on:${string}`]?: (e: unknown) => void
+  [K in `on:${string}`]?: EventHandler<unknown>
 }
 
 interface CommonProps<TInstance> extends EventProps, RawEventProps {

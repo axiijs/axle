@@ -80,6 +80,8 @@ type AxleNode = {
 | `onKeyDown`                            | `key.down`                         |
 
 未收录的 `onXxx` 直接报错（避免拼错事件名静默失效）。
+事件 prop 的值为 `null` / `undefined` 时按未传处理（`onTap={cond ? fn : undefined}`
+的条件处理器惯用法）；其余非函数值仍然报错。
 同时支持 **原始事件名逃生舱**：`on:tap={handler}` / `on:pointer-menu={handler}`
 （JSX 属性名不允许 `.`，用 `-` 代替；`on:` 后面的字符串替换后原样传给 `ui.on(...)`），
 用于别名表未覆盖的事件（如 Leafer 的生命周期事件）。
@@ -153,6 +155,12 @@ interface Host {
   innerHost 自带常驻占位符，区间永远非空），render 完成后**销毁自己的占位符**、
   区间委托给 innerHost——虚拟化滚动中组件反复挂卸，每个组件实例少一个常驻
   场景图节点。
+- **`createHost` 分发自身抛错（非法 child 类型）也在事务内**：此刻新 host 尚未
+  进任何簿记（`innerHost` / `childHosts` / `root.host` 未赋值），destroy 够不到
+  刚插入的占位符——分发方（`ComponentHost.render` / `StaticArrayHost.render` /
+  `root.render`）必须就地清掉该占位符再向上抛。列表行 / 函数区域路径本有
+  `(boundary, anchor)` 区间回滚覆盖，此清理让契约不依赖上层兜底（root 直系
+  路径没有区间回滚）。正常路径只多一个 try 栈帧。
 
 ### 3.2 FunctionHost
 

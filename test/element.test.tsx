@@ -105,6 +105,19 @@ describe('events', () => {
     expect(() => mount(jsxRaw('rect', { 'on:tap': 1 }))).toThrow('must be a function')
   })
 
+  it('treats null/undefined event props as absent (conditional handler idiom)', () => {
+    // onTap={cond ? fn : undefined} 是 JSX 的惯用法，不应在挂载时报错
+    const { container } = mount(<rect onTap={undefined} on:tap={undefined} onPointerDown={null} />)
+    const [rect] = contentChildren(container)
+    expect(rect!.tag).toBe('Rect')
+    // 不产生任何监听：emit 不抛错、也没有绑定副作用
+    expect(() => rect!.emit('tap')).not.toThrow()
+    // 未收录的 onXxx 别名在值为空时同样按未传处理（没有可绑定的东西）
+    expect(() => mount(jsxRaw('rect', { onNotAnEvent: undefined }))).not.toThrow()
+    // 值非空时未收录别名仍然报错（拼错事件名不允许静默失效）
+    expect(() => mount(jsxRaw('rect', { onNotAnEvent: vi.fn() }))).toThrow('unknown event prop')
+  })
+
   it('does not treat props like "once" as events', () => {
     const { container } = mount(jsxRaw('rect', { once: true }))
     const [rect] = contentChildren(container)

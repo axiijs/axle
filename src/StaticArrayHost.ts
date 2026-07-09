@@ -34,7 +34,18 @@ export class StaticArrayHost implements Host {
     for (const item of this.source) {
       const itemPlaceholder = createPlaceholder('array item')
       insertBefore(itemPlaceholder, this.placeholder)
-      const childHost = createHost(item, itemPlaceholder, childContext)
+      // CAUTION createHost 分发自身抛错（非法 item 类型）时必须就地清掉刚插入的
+      //  itemPlaceholder：此刻 childHost 尚未进 childHosts 簿记，destroy() 够不
+      //  到——在 root 直系路径上（无区间回滚兜底）会泄漏成永久孤儿节点（违反
+      //  「未消费的占位符也在事务内」，doc/02 §3.1）。静态数组只在挂载时构建一次，
+      //  每 item 一个 try 栈帧、零新增分配，成本只在错误路径上。
+      let childHost: Host
+      try {
+        childHost = createHost(item, itemPlaceholder, childContext)
+      } catch (e) {
+        destroyNode(itemPlaceholder)
+        throw e
+      }
       this.childHosts.push(childHost)
       childHost.render()
     }

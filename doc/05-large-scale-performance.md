@@ -277,7 +277,11 @@ const windowed = rxWindowedList(cards, {
      拖拽帧上挂载，不能等下一次视口变化）。索引在 write-through 写入时
      向窗口化列表发变更通知（普通回调即可，同帧合并）；
   4. pin 集合变化。
-     以上全部在 rAF 边界合并为一次重算。
+     以上全部在 rAF 边界合并为一次重算。**`buffer` / `hysteresis` getter 的
+     响应式依赖同样在追踪集内**：它们决定窗口本身（enterRect / keepRect），
+     getter 依赖档位之外的响应式输入（如设置项 atom）时，写入也必须触发
+     全量重算——只在重算时读取会漏掉这类触发（重算运行在 rAF 回调里，
+     不被任何 effect 追踪）。
 - 重算用空间索引查询扩展视口内的 id 集合，与上一帧集合 diff，产出
   **每帧合并为一批的 splice**（进出视口的卡片在列表中散落，实际是
   O(变化数) 次 splice；框架侧预留 `RxList` 批量 patch 的优化口子）。
