@@ -136,6 +136,44 @@ describe('RxListHost explicit key change', () => {
     items.set(2, 'C')
     expect(rowTexts(group)).toEqual(['A', 'b', 'C'])
   })
+
+  it('set() at the tail index appends a row', () => {
+    const items = new RxList(['a'])
+    const { group } = listGroup(items)
+    items.set(1, 'b')
+    expect(rowTexts(group)).toEqual(['a', 'b'])
+    items.push('c')
+    expect(rowTexts(group)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('set() beyond the tail fills holes with empty rows (语义同 arr[i] = v 的稀疏数组)', () => {
+    const items = new RxList<string>(['a'])
+    const { group, root } = listGroup(items)
+    items.set(3, 'x')
+    // data 是 ['a', <hole>, <hole>, 'x']：空洞渲染为空行，簿记与数据等长
+    expect(items.data.length).toBe(4)
+    expect(rowTexts(group)).toEqual(['a', 'x'])
+    // 簿记里没有 hole：getNodes 不会踩到 undefined
+    expect(() => root.host!.getNodes()).not.toThrow()
+  })
+
+  it('set() beyond the tail 之后 splice / push / set 照常工作（簿记不失步）', () => {
+    const items = new RxList<string>(['a'])
+    const { group } = listGroup(items)
+    items.set(3, 'x')
+
+    items.splice(0, 1) // 删除 'a'（此前会在 findAnchor 里踩 hole 崩溃并永久失步）
+    expect(rowTexts(group)).toEqual(['x'])
+
+    items.push('y')
+    expect(rowTexts(group)).toEqual(['x', 'y'])
+
+    items.set(0, 'filled') // 修复第一个空洞行
+    expect(rowTexts(group)).toEqual(['filled', 'x', 'y'])
+
+    items.unshift('z')
+    expect(rowTexts(group)).toEqual(['z', 'filled', 'x', 'y'])
+  })
 })
 
 describe('RxListHost reorder', () => {

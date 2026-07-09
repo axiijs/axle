@@ -437,8 +437,7 @@ export class RxWindowedList<T, Id, L extends string = string> {
           if (!this.queuedMountIds.has(task.id)) continue // 已撤销
           if (this.pinnedSet.has(task.id) && hasBudget()) {
             this.queuedMountIds.delete(task.id)
-            this.applyMount(task.id, task.lod)
-            ops++
+            if (this.applyMount(task.id, task.lod)) ops++
           } else {
             rest.push(task)
           }
@@ -459,7 +458,10 @@ export class RxWindowedList<T, Id, L extends string = string> {
               const task = this.pendingMounts[this.mountCursor++]!
               if (!this.queuedMountIds.delete(task.id)) continue // 已撤销
               const row = this.buildMountRow(task.id, task.lod)
-              if (row) rows.push(row)
+              // 已失效的任务（挂载前复核未通过）与被撤销的任务一样不占预算，
+              // 避免一帧的结构操作配额被废任务耗光而没有做任何实际挂载
+              if (!row) continue
+              rows.push(row)
               ops++
             }
           } finally {
@@ -513,9 +515,11 @@ export class RxWindowedList<T, Id, L extends string = string> {
     this.rows.splice(start, 0, ...rows)
   }
 
-  private applyMount(id: Id, lod: L): void {
+  /** 返回是否真的挂载了（任务失效时返回 false，调用方据此决定是否计入预算） */
+  private applyMount(id: Id, lod: L): boolean {
     const row = this.buildMountRow(id, lod)
     if (row) this.commitMountRows([row])
+    return !!row
   }
 
   private applyUnmount(id: Id): void {

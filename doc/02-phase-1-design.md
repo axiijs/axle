@@ -148,6 +148,13 @@ interface Host {
 - 结构路径：销毁旧 innerHost，创建新占位符 + `createHost` 重建。重建过程中
   `Notifier.instance.pauseTracking()` + `effect.pauseCollectChild()`，内层的响应式
   读取不能泄漏为本 effect 的依赖。
+- **结构重建是事务化的**（与 RxListHost 的行创建同一套论证）：内层渲染抛错时回滚
+  `(boundary, placeholder)` 区间内已插入的节点、区域降级为空，错误交给 root error
+  钩子（未注册钩子时：初次渲染在用户 render 调用栈上保持向上抛；更新运行在微任务里，
+  向上抛只会变成 uncaught exception，降级为 `console.error`）。effect 保持活跃，
+  依赖恢复后区域可重建。
+- 函数体自身抛错：交给 error 钩子则区域渲染为空；未注册钩子时初次渲染向上抛、
+  更新 `console.error` + 跳过本次更新（保留旧内容，与属性绑定的契约一致）。
 - 函数收到 `{ onCleanup }` context，注册的清理函数在每次重算前与 destroy 时执行。
 
 ### 3.3 RxListHost
@@ -157,6 +164,12 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 
 - **splice**：新行创建 Host 后插入到「插入点之后第一个已渲染行的 firstNode」之前
   （找不到则 list 占位符之前）；被删行逐个 destroy。
+- **越界 `set`**（`list.set(i, v)`，`i >=` 当前长度，语义同 `arr[i] = v` 的稀疏数组）：
+  空洞位补为空行（EmptyHost），簿记与数据始终等长且无 hole。
+- **patch 失败自愈**：结构性 patch 抛错（错误交给 error 钩子 / `console.error`）后
+  簿记可能已与场景图失步，且同批剩余 triggerInfo 基于失败前簿记、不可继续套用——
+  跳过剩余增量、销毁全部行、按当前数据全量重建（数据在 patch 前已全部就位，
+  重建即最终态）。只在错误路径上发生，正常 patch 零额外开销。
 - **reorder**：语义同 data0（`data[to] = old[from]`）。用受影响区间 + LIS（最长递增
   子序列）求最小搬移集合，逐 host 把 `getNodes()` 区间 `addBefore` 到锚点前。
 - **explicit key change**（`list.set(i, v)`）：销毁旧行 Host，在正确锚点处重建。
@@ -171,7 +184,7 @@ EXPLICIT_KEY_CHANGE)` 方案），用普通数组维护行 Host：
 type Component = (props: Props, context: RenderContext) => AxleChild
 type RenderContext = {
   useEffect(handle): void // render 完成后调用；返回函数注册为清理
-  useLayoutEffect(handle): void // root attach 后调用（root 已 attach 则渲染完立即调用）
+  useLayoutEffect(handle): void // 子树连通场景图后调用（见下）；返回函数注册为清理
   onCleanup(fn): void
   expose(value, name?): T // 暴露给 ref
   createRef(): { current: null }
@@ -183,6 +196,12 @@ type RenderContext = {
   computed / effect，destroy 时统一清理。
 - `props.children` 透传 JSX children。
 - 组件上的 `ref` prop 拿到 `expose` 出来的对象（在 layoutEffect 阶段 attach，destroy 时置 null）。
+- **layoutEffect / 组件 ref 的连通时机**：保证执行时组件子树已接入 `root.container`
+  （layoutEffect 里能拿到 `ui.leafer` / 世界坐标）。root attach 前渲染的组件在
+  attach 事件时执行；attach 后动态挂载的组件，若渲染发生在脱离场景图的子树里
+  （元素 children 先渲染、后插入），会进入 root 的连通队列，由把子树接入场景图
+  的插入点（ElementHost 的占位符路径）flush。无 layoutEffect 且无 ref 的组件
+  完全跳过该机制（虚拟化高频挂载主路径零额外开销）。
 - 渲染抛错时：若 root 注册了 `error` 监听（`root.on('error', cb)`）则报告并把该区域渲染为空，
   否则向上抛出（与 axii 相同）。
 

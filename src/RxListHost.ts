@@ -161,13 +161,23 @@ export class RxListHost implements Host {
             //  没有 try/finally，抛错会让 computed 卡在中间状态。
             //  行渲染错误不会走到这里（createRowHost 内部已降级消化），这里兜底的
             //  是 reorder/未知 patch 等结构性错误：交给 root error 钩子，
-            //  未注册钩子时 console.error 报告后继续处理后续 patch。
+            //  未注册钩子时 console.error 报告。
             try {
               host.applyTriggerInfo(info)
             } catch (error) {
               if (!host.pathContext.root.dispatch('error', error)) {
-                console.error('[axle] RxList patch failed:', error)
+                console.error(
+                  '[axle] RxList patch failed, rebuilding the list from current data:',
+                  error,
+                )
               }
+              // 结构性 patch 失败后簿记可能已与场景图失步，且同批剩余的
+              // triggerInfo 都是基于失败前簿记的增量描述、无法继续套用。
+              // 放弃增量、按当前数据全量重建（数据在 patch 前已全部就位，
+              // 重建即最终态），保证列表区域回到与数据一致的状态。
+              // 只在错误路径上发生，正常 patch 零额外开销。
+              host.rebuildAllRows()
+              break
             }
           }
         } finally {
@@ -264,11 +274,46 @@ export class RxListHost implements Host {
   }
   handleExplicitKeyChange(index: number): void {
     const hosts = this.hosts!
+    const data = this.source.data
+    // CAUTION 越界 set（list.set(i, v)，i >= 当前长度）的语义同 arr[i] = v：
+    //  data 变长并出现稀疏空洞。簿记必须与数据保持等长且无 hole，否则后续
+    //  patch 的 findAnchor / getNodes 会踩到 undefined（hosts[i]! 非空断言）、
+    //  patch 中断后列表永久失步。空洞位补为空行（EmptyHost，与 data 里
+    //  undefined 的渲染语义一致）。正常路径只多一次整数比较。
+    if (index >= hosts.length) {
+      // 新行全部在列表尾部，锚点就是常驻的 list 占位符
+      while (hosts.length < index) {
+        hosts.push(this.createRowHost(data[hosts.length], this.placeholder))
+      }
+      hosts.push(this.createRowHost(data[index], this.placeholder))
+      return
+    }
     const oldHost = hosts[index]
     oldHost?.destroy()
     // 连续 set 时后面的行 host 可能也是新的（未渲染），向后找第一个已渲染行作锚点
     const anchor = this.findAnchor(index + 1)
-    hosts[index] = this.createRowHost(this.source.data[index], anchor)
+    hosts[index] = this.createRowHost(data[index], anchor)
+  }
+  /**
+   * 错误恢复路径：销毁全部行、按当前数据全量重建。
+   * 只在结构性 patch 失败（簿记可能已与场景图失步）时调用，正常路径不经过。
+   */
+  rebuildAllRows(): void {
+    const hosts = this.hosts!
+    for (const rowHost of hosts) {
+      // 失步状态下行销毁是尽力而为（个别行可能已半损坏）；行 host 各自持有
+      // 自己的节点（行创建是事务化的），逐行销毁即可清空整个列表区间。
+      try {
+        rowHost?.destroy()
+      } catch {
+        // 剩余绑定由 GC 兜底，优先保证重建继续
+      }
+    }
+    hosts.length = 0
+    const data = this.source.data
+    for (let i = 0; i < data.length; i++) {
+      hosts.push(this.createRowHost(data[i], this.placeholder))
+    }
   }
   destroy(parentHandle?: boolean): void {
     destroyComputed(this.hostRenderComputed)

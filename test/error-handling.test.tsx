@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { atom, RxList } from 'data0'
+import { atom, batch, RxList } from 'data0'
 import { Group } from 'leafer-ui'
 import type { IText, IUI } from 'leafer-ui'
 import { createRoot } from '@axiijs/axle'
 import type { Host } from '@axiijs/axle'
-import { contentChildren, mount, texts } from './helpers.js'
+import { contentChildren, mount, texts, tick } from './helpers.js'
 
 /**
  * 错误路径的一致性契约：
@@ -152,6 +152,285 @@ describe('RxListHost 行渲染抛错（事务化行创建）', () => {
     expect(onError).toHaveBeenCalledTimes(1)
     expect(texts(group!)).toEqual(['a'])
     expect(findListHost(root.host).hosts.length).toBe(2)
+  })
+})
+
+describe('FunctionHost 结构重建抛错（事务化区域重建）', () => {
+  it('更新时结构渲染抛错：整体回滚无孤儿、错误进钩子、依赖恢复后可重建', async () => {
+    const mode = atom<'ok' | 'bad' | 'recovered'>('ok')
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        {() => {
+          const current = mode()
+          if (current === 'ok') return <rect width={1} />
+          if (current === 'bad')
+            return (
+              <>
+                <rect width={99} />
+                {badChild as never}
+              </>
+            )
+          return <rect width={2} />
+        }}
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    const widths = () => contentChildren(group!).map((child) => (child as { width?: number }).width)
+    expect(widths()).toEqual([1])
+
+    mode('bad')
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 失败渲染整体回滚：区域为空，fragment 里先渲染成功的 rect(99) 不能残留成孤儿
+    expect(widths()).toEqual([])
+
+    // effect 保持活跃，依赖恢复后该区域恢复渲染，且不叠加历史孤儿
+    mode('recovered')
+    await tick()
+    expect(widths()).toEqual([2])
+  })
+
+  it('更新时结构渲染抛错（无钩子）：console.error 报告、区域为空、应用不崩、可恢复', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const mode = atom<'ok' | 'bad' | 'recovered'>('ok')
+      const { container } = mount(
+        <group>
+          {() => {
+            const current = mode()
+            if (current === 'ok') return <rect width={1} />
+            if (current === 'bad') return <group>{badChild as never}</group>
+            return <rect width={2} />
+          }}
+        </group>,
+      )
+      const [group] = contentChildren(container)
+
+      mode('bad')
+      await tick()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(contentChildren(group!)).toEqual([])
+
+      mode('recovered')
+      await tick()
+      expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([
+        2,
+      ])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('回滚不越界：函数区域两侧的兄弟节点不受失败渲染影响', async () => {
+    const mode = atom<'ok' | 'bad'>('ok')
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        <rect width={10} />
+        {() => {
+          if (mode() === 'bad')
+            return (
+              <>
+                <rect width={99} />
+                {badChild as never}
+              </>
+            )
+          return <rect width={1} />
+        }}
+        <rect width={20} />
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    const widths = () => contentChildren(group!).map((child) => (child as { width?: number }).width)
+    expect(widths()).toEqual([10, 1, 20])
+
+    mode('bad')
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 只回滚失败区域自己的节点（含 fragment 里已渲染成功的 rect(99)），兄弟完好
+    expect(widths()).toEqual([10, 20])
+
+    mode('ok')
+    await tick()
+    expect(widths()).toEqual([10, 1, 20])
+  })
+
+  it('从文本快速路径切入失败的结构渲染：文本清理、区域为空、可恢复', async () => {
+    const mode = atom<'text' | 'bad' | 'ok'>('text')
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        {() => {
+          const current = mode()
+          if (current === 'text') return 'hello'
+          if (current === 'bad') return <group>{badChild as never}</group>
+          return <rect width={3} />
+        }}
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    expect(texts(group!)).toEqual(['hello'])
+
+    mode('bad')
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(contentChildren(group!)).toEqual([])
+
+    mode('ok')
+    await tick()
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([3])
+  })
+
+  it('RxList 行内的函数区域更新抛错：只降级该区域，行与列表簿记不受影响', async () => {
+    const fail = atom(false)
+    const rowContent = () => {
+      if (fail()) throw new Error('region boom')
+      return <rect width={5} />
+    }
+    const items = new RxList<unknown>([
+      <group>
+        {rowContent}
+        <text text={'label'} />
+      </group>,
+    ])
+    const { container, root, onError } = mountWithErrorHook(<group>{items}</group>)
+    const [group] = contentChildren(container)
+    const row = contentChildren(group!)[0]!
+    expect(contentChildren(row).map((child) => child.tag)).toEqual(['Rect', 'Text'])
+
+    fail(true)
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 函数区域降级为空文本（函数体抛错 → 钩子 → 区域为空），行结构保留
+    expect(contentChildren(row).map((child) => child.tag)).toEqual(['Text', 'Text'])
+    expect(findListHost(root.host).hosts.length).toBe(1)
+
+    // 列表的后续 patch 照常
+    items.push('sibling row')
+    expect(findListHost(root.host).hosts.length).toBe(2)
+
+    fail(false)
+    await tick()
+    expect(contentChildren(row).map((child) => child.tag)).toEqual(['Rect', 'Text'])
+  })
+
+  it('初次渲染结构抛错（无钩子）：保持向上抛（在用户 render 调用栈上）', () => {
+    expect(() => mount(<group>{() => <group>{badChild as never}</group>}</group>)).toThrow(
+      'unknown child type',
+    )
+  })
+
+  it('初次渲染结构抛错（有钩子）：错误进钩子、区域渲染为空', () => {
+    const { container, onError } = mountWithErrorHook(
+      <group>{() => <group>{badChild as never}</group>}</group>,
+    )
+    expect(onError).toHaveBeenCalledTimes(1)
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!)).toEqual([])
+  })
+
+  it('函数体更新抛错（无钩子）：console.error + 保留旧内容，依赖恢复后继续', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const fail = atom(false)
+      const { container } = mount(
+        <group>
+          {() => {
+            if (fail()) throw new Error('recompute boom')
+            return <rect width={7} />
+          }}
+        </group>,
+      )
+      const [group] = contentChildren(container)
+
+      fail(true)
+      await tick()
+      // 更新运行在微任务里，向上抛只会变成 uncaught exception：降级为报告 + 跳过，
+      // 旧内容保留（与属性绑定 / atom 文本更新的契约一致）
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([
+        7,
+      ])
+
+      fail(false)
+      await tick()
+      expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([
+        7,
+      ])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
+describe('RxList patch 失败自愈（按当前数据全量重建）', () => {
+  function stubPatchFailureOnce(root: { host: Host | undefined }) {
+    const listHost = findListHost(root.host) as unknown as {
+      applyTriggerInfo: (info: unknown) => void
+    }
+    return vi.spyOn(listHost, 'applyTriggerInfo').mockImplementationOnce(() => {
+      throw new Error('patch boom')
+    })
+  }
+
+  it('patch 抛错：错误进钩子，列表重建到与数据一致，后续增量 patch 正常', () => {
+    const items = new RxList<unknown>(['a', 'b', 'c'])
+    const { container, root, onError } = mountWithErrorHook(<group>{items}</group>)
+    const [group] = contentChildren(container)
+    const spy = stubPatchFailureOnce(root)
+
+    items.splice(1, 1) // patch 抛错，数据已变为 ['a', 'c']
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(texts(group!)).toEqual(['a', 'c'])
+    expect(findListHost(root.host).hosts.length).toBe(2)
+
+    // 重建之后增量路径恢复正常
+    items.push('d')
+    expect(texts(group!)).toEqual(['a', 'c', 'd'])
+    spy.mockRestore()
+  })
+
+  it('无钩子时 console.error 报告并重建，应用不崩', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const items = new RxList<unknown>(['a', 'b'])
+      const container = new Group() as unknown as IUI
+      const root = createRoot(container)
+      root.render(<group>{items}</group>)
+      const [group] = contentChildren(container)
+      const spy = stubPatchFailureOnce(root)
+
+      items.unshift('x')
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(texts(group!)).toEqual(['x', 'a', 'b'])
+
+      items.splice(1, 1)
+      expect(texts(group!)).toEqual(['x', 'b'])
+      spy.mockRestore()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('同批多个 patch 中途失败：跳过剩余增量描述、一次重建到最终态', () => {
+    const items = new RxList<unknown>(['a', 'b'])
+    const { container, root, onError } = mountWithErrorHook(<group>{items}</group>)
+    const [group] = contentChildren(container)
+    const spy = stubPatchFailureOnce(root)
+
+    // batch 里两次 push 合并为同一次 applyPatch 的两条 triggerInfo；
+    // 第一条失败后剩余增量基于失败前簿记、不可继续套用，必须整体重建
+    batch(() => {
+      items.push('c')
+      items.push('d')
+    })
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 第一条失败 → break：第二条增量不再执行（否则会重复插入）
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(texts(group!)).toEqual(['a', 'b', 'c', 'd'])
+    expect(findListHost(root.host).hosts.length).toBe(4)
+
+    items.splice(0, 1)
+    expect(texts(group!)).toEqual(['b', 'c', 'd'])
+    spy.mockRestore()
   })
 })
 

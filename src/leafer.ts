@@ -74,6 +74,16 @@ export function destroyNode(node: IUI): void {
   node.destroy()
 }
 
+/** node 沿 parent 链是否可达 container（axle 语义下的「已连通」）。O(深度) 指针追逐 */
+export function isAttachedTo(node: IUI, container: IUI): boolean {
+  let current: IUI | null | undefined = node
+  while (current) {
+    if (current === container) return true
+    current = current.parent as IUI | undefined
+  }
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // 事件映射：onXxx prop 名 → Leafer 事件类型字符串。
 // 显式别名表，未收录的 onXxx 直接报错，避免拼错事件名静默失效。
