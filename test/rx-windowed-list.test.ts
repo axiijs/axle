@@ -234,6 +234,27 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('entries deleted from the index are unmounted first (before far-away survivors)', () => {
+    const { index, addCard, viewRect, scheduler, windowed } = setup({ maxOpsPerFrame: 1 })
+    addCard(1, 10, 10)
+    addCard(2, 48, 48) // 离中心最近的存活条目
+    addCard(3, 90, 90)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(3)
+
+    // 同帧内删除条目 2 并移走视口：已删除条目视为无穷远，必须最先卸载，
+    // 不能以「幽灵行」形态排在存活条目之后
+    index.delete(2)
+    viewRect({ x: 1000, y: 1000, width: 100, height: 100 })
+    scheduler.frame()
+    const remaining = windowed.rows.data.map((row) => row.id)
+    expect(remaining.length).toBe(2)
+    expect(remaining).not.toContain(2)
+    scheduler.settle()
+    expect(windowed.rows.data.length).toBe(0)
+    windowed.destroy()
+  })
+
   it('pins (trigger 4) keep entries alive outside the window', () => {
     const pins = atom<number[]>([])
     const { addCard, scheduler, windowed, mountedIds } = setup({ pins: () => pins() })
