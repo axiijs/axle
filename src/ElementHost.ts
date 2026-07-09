@@ -161,7 +161,15 @@ export class ElementHost implements Host {
       const target = ui as unknown as Record<string, unknown>
       for (const [key, value] of reactiveProps) {
         const effect = new BindingEffect(() => {
-          target[key] = Array.isArray(value) ? value.map(evaluate) : evaluate(value)
+          // CAUTION 属性更新（含初始求值）抛错：外部通过 root.on('error') 注册了
+          //  处理器时报告错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续
+          //  更新），否则保持向上抛出。与 ComponentHost/FunctionHost 的错误钩子
+          //  语义一致（对齐 axii 的同名修复）。
+          try {
+            target[key] = Array.isArray(value) ? value.map(evaluate) : evaluate(value)
+          } catch (e) {
+            if (!this.pathContext.root.dispatch('error', e)) throw e
+          }
         })
         effect.run()
         attrEffects.push(effect)

@@ -221,13 +221,16 @@ describe('component host getNodes after render', () => {
 })
 
 describe('text stringification of atom child', () => {
-  it('handles numbers and booleans', () => {
+  it('handles numbers, booleans render empty (conditional-rendering idiom)', () => {
     const value = atom<unknown>(3.5)
     const { container } = mount(<group>{value}</group>)
     const [group] = contentChildren(container)
     const [text] = contentChildren(group!)
     expect((text as IText).text).toBe('3.5')
+    // boolean 与 FunctionHost 的文本语义一致：渲染为空而不是字面 "false"
     value(false)
-    expect((text as IText).text).toBe('false')
+    expect((text as IText).text).toBe('')
+    value(true)
+    expect((text as IText).text).toBe('')
   })
 })
