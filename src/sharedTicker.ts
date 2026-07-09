@@ -40,6 +40,9 @@ export function createSharedTicker(options?: {
 
   const ticker: SharedTicker = {
     add(callback) {
+      // CAUTION destroy 之后的订阅是误用：循环不会再启动，入队的回调永远不会
+      //  被调用也不会被清理，直接按 no-op 处理。
+      if (destroyed) return () => {}
       callbacks.add(callback)
       start()
       return () => {
