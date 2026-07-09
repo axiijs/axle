@@ -70,7 +70,11 @@ describe('组件 layoutEffect 的连通时机（动态挂载）', () => {
     const log: boolean[] = []
     const items = new RxList<number>([])
     const { container } = mount(
-      <group>{items.map(() => <Card onLayout={(ui) => log.push(isAttachedTo(ui!, container))} />)}</group>,
+      <group>
+        {items.map(() => (
+          <Card onLayout={(ui) => log.push(isAttachedTo(ui!, container))} />
+        ))}
+      </group>,
     )
 
     items.push(1)

@@ -159,7 +159,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     }
   }
   /** 结构渲染失败的回滚与降级（区域渲染为空），见 renderSource 的说明 */
-  private recoverFailedRender(error: unknown, partialHost: Host | undefined, boundary: IUI | null): void {
+  private recoverFailedRender(
+    error: unknown,
+    partialHost: Host | undefined,
+    boundary: IUI | null,
+  ): void {
     // 1. 尽力清理半渲染 host 已建立的绑定/effect/ref（parentHandle 模式不碰场景图，
     //    节点由下面的区间回滚整体移除）
     if (partialHost) {

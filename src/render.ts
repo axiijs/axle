@@ -37,7 +37,6 @@ export type Root = {
   flushAttachQueue: () => void
 }
 
-
 /**
  * 在一个 Leafer branch（Leafer / App / Group / Frame / Box）上创建渲染根。
  * axle 不接管 Leafer 实例的创建与渲染循环，容器由使用者持有。

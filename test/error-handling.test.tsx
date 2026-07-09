@@ -276,9 +276,7 @@ describe('FunctionHost 结构重建抛错（事务化区域重建）', () => {
 
     mode('ok')
     await tick()
-    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([
-      3,
-    ])
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([3])
   })
 
   it('RxList 行内的函数区域更新抛错：只降级该区域，行与列表簿记不受影响', async () => {

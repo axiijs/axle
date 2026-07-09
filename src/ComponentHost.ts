@@ -125,10 +125,7 @@ export class ComponentHost implements Host {
         // 执行时拿得到场景图信息（ui.leafer / 世界坐标等）。
         // 一定要保存取消函数：组件若在连通前被销毁（如所在渲染事务回滚），
         // 必须取消，否则连通后会对已销毁的组件执行 layoutEffect / ref。
-        this.removeAttachListener = this.pathContext.root.deferAttached(
-          this,
-          this.runLayoutEffect,
-        )
+        this.removeAttachListener = this.pathContext.root.deferAttached(this, this.runLayoutEffect)
       }
     } else {
       // 一定要保存退订函数：组件若在 root attach 之前被销毁，必须退订，
