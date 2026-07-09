@@ -359,9 +359,7 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     lod('simple')
     scheduler.settle()
     expect(
-      windowed.rows.data
-        .map((row) => ({ id: row.id, lod: row.lod }))
-        .sort((a, b) => a.id - b.id),
+      windowed.rows.data.map((row) => ({ id: row.id, lod: row.lod })).sort((a, b) => a.id - b.id),
     ).toEqual([
       { id: 1, lod: 'simple' },
       { id: 3, lod: 'simple' },
@@ -664,5 +662,38 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     scheduler.settle()
     expect(windowed.rows.data.length).toBe(0)
     expect(windowed.pendingCount).toBe(0)
+  })
+
+  it('a throwing resolve drops only that card; the batch commits and draining continues', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    const scheduler = manualScheduler()
+    const windowed = new RxWindowedList<Card, number, string>({
+      index,
+      resolve: (id) => {
+        if (id === 2) throw new Error('resolve failed')
+        return { id, name: `card-${id}` }
+      },
+      viewRect: () => ({ x: 0, y: 0, width: 100, height: 100 }),
+      schedule: scheduler.schedule.bind(scheduler),
+      now: () => 0,
+    })
+    for (const id of [1, 2, 3, 4, 5]) index.set(id, { x: id * 5, y: id * 5, width: 10, height: 10 })
+
+    // resolve 抛错向上抛给帧调度器（保持可观测）……
+    expect(() => scheduler.settle()).toThrow('resolve failed')
+    // ……但同批已构建的行仍被提交，失败任务被放弃，后续帧继续消化剩余队列
+    scheduler.settle()
+
+    const ids = windowed.rows.data.map((row) => row.id).sort((a, b) => a - b)
+    expect(ids).toEqual([1, 3, 4, 5])
+    // 簿记一致：mountedIds 与 rows 完全对应
+    expect([...windowed.mountedIds].sort((a, b) => a - b)).toEqual([1, 3, 4, 5])
+    expect(windowed.pendingCount).toBe(0)
+
+    // 之后的索引变更照常工作
+    index.set(6, { x: 50, y: 50, width: 10, height: 10 })
+    scheduler.settle()
+    expect(windowed.rows.data.map((row) => row.id).sort((a, b) => a - b)).toEqual([1, 3, 4, 5, 6])
+    windowed.destroy()
   })
 })

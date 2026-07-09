@@ -201,18 +201,27 @@ export class RxWindowedList<T, Id, L extends string = string> {
   /** 处理一帧：重算目标集合（若有触发源变脏）+ 在预算内消化队列 */
   flush(): void {
     if (this.destroyed) return
-    if (this.recomputeNeeded) {
-      this.recomputeNeeded = false
-      // 全量重算覆盖增量判定（队列会整体重建）
-      this.pendingChangedIds.clear()
-      this.recompute()
-    } else if (this.pendingChangedIds.size) {
-      for (const id of this.pendingChangedIds) this.applyIncrementalChange(id)
-      this.pendingChangedIds.clear()
-    }
-    this.drain()
-    if (this.recomputeNeeded || this.pendingChangedIds.size || this.actionableCount() > 0) {
-      this.scheduleFrame()
+    try {
+      if (this.recomputeNeeded) {
+        this.recomputeNeeded = false
+        // 全量重算覆盖增量判定（队列会整体重建）
+        this.pendingChangedIds.clear()
+        this.recompute()
+      } else if (this.pendingChangedIds.size) {
+        for (const id of this.pendingChangedIds) this.applyIncrementalChange(id)
+        this.pendingChangedIds.clear()
+      }
+      this.drain()
+    } finally {
+      // CAUTION 放在 finally：drain 抛错（如 resolve 抛错）时也要续调度，
+      //  失败任务已出队（放弃执行），其余排队任务在后续帧继续消化，
+      //  否则一次异常会让队列停摆到下一个触发源事件。
+      if (
+        !this.destroyed &&
+        (this.recomputeNeeded || this.pendingChangedIds.size || this.actionableCount() > 0)
+      ) {
+        this.scheduleFrame()
+      }
     }
   }
 
@@ -443,14 +452,20 @@ export class RxWindowedList<T, Id, L extends string = string> {
             this.pendingMounts.length,
           )
           const rows: WindowedRow<T, Id, L>[] = []
-          while (this.mountCursor < batchLimit) {
-            const task = this.pendingMounts[this.mountCursor++]!
-            if (!this.queuedMountIds.delete(task.id)) continue // 已撤销
-            const row = this.buildMountRow(task.id, task.lod)
-            if (row) rows.push(row)
-            ops++
+          try {
+            while (this.mountCursor < batchLimit) {
+              const task = this.pendingMounts[this.mountCursor++]!
+              if (!this.queuedMountIds.delete(task.id)) continue // 已撤销
+              const row = this.buildMountRow(task.id, task.lod)
+              if (row) rows.push(row)
+              ops++
+            }
+          } finally {
+            // CAUTION 放在 finally：批内某个 resolve 抛错时，已构建的行仍然提交，
+            //  簿记（rowIds/mounted/mountedIdSet 与 rows）保持一致；
+            //  失败任务已出队（放弃挂载），错误向上抛给帧调度器保持可观测。
+            if (rows.length) this.commitMountRows(rows)
           }
-          if (rows.length) this.commitMountRows(rows)
         }
       }
     }
