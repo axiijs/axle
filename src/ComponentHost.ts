@@ -6,6 +6,7 @@ import { linkHost } from './Host.js'
 import { createHost } from './createHost.js'
 import { attachRef, detachRef } from './ElementHost.js'
 import { createPlaceholder, destroyNode, insertBefore, isAttachedTo } from './leafer.js'
+import { runCleanupIsolated } from './util.js'
 import type { Component, EffectHandle, Props, RefObject, RefProp, RenderContext } from './types.js'
 
 /**
@@ -108,7 +109,7 @@ export class ComponentHost implements Host {
     this.placeholder = null
 
     this.effects?.forEach((effect) => {
-      const handle = effect()
+      const handle = this.runWithErrorHook(effect)
       if (typeof handle === 'function') this.onCleanup(handle as () => unknown)
     })
 
@@ -135,13 +136,30 @@ export class ComponentHost implements Host {
       })
     }
   }
+  /**
+   * 挂载期生命周期回调（useEffect / useLayoutEffect）的统一错误出口
+   * （对齐 axii 的同名方法）：注册了 root error 钩子时交给钩子——兄弟回调
+   * 照常执行、已渲染的区域保持不动；未注册钩子时保持向上抛：初次渲染时
+   * 落在用户的 render 调用栈上，行/区域挂载中由所在渲染事务按无钩子契约
+   * 降级（doc/02 §3.4）。
+   */
+  runWithErrorHook(fn: () => unknown): unknown {
+    try {
+      return fn()
+    } catch (e) {
+      if (!this.pathContext.root.dispatch('error', e)) throw e
+    }
+  }
   runLayoutEffect = (): void => {
     // 渲染之后才 attach ref，这样 ref 里能拿到场景图信息
     if (this.refProp) {
       attachRef(this.refProp, { ...this.exposed })
     }
     this.layoutEffects?.forEach((layoutEffect) => {
-      const handle = layoutEffect()
+      // CAUTION layoutEffect 抛错走 error 钩子（对齐 axii）：否则会打断同批
+      //  其他 layoutEffect / ref，且从 flushAttachQueue 冒出去时会把已经
+      //  渲染成功的所在区域误当成渲染失败回滚掉。
+      const handle = this.runWithErrorHook(layoutEffect)
       if (typeof handle === 'function') {
         ;(this.layoutEffectDestroyHandles ||= new Set()).add(handle as () => unknown)
       }
@@ -151,8 +169,15 @@ export class ComponentHost implements Host {
     detachRef(this.refProp)
     this.frame?.forEach((cleanup) => cleanup.destroy())
     this.innerHost?.destroy(parentHandle)
-    this.layoutEffectDestroyHandles?.forEach((handle) => handle())
-    this.destroyCallbacks?.forEach((callback) => callback())
+    // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：
+    // 兄弟清理与剩余销毁流程（attach 队列退订、占位符移除）必须走完。
+    const root = this.pathContext.root
+    this.layoutEffectDestroyHandles?.forEach((handle) =>
+      runCleanupIsolated(root, handle, 'component layoutEffect cleanup'),
+    )
+    this.destroyCallbacks?.forEach((callback) =>
+      runCleanupIsolated(root, callback, 'component cleanup callback'),
+    )
     this.removeAttachListener?.()
     if (!parentHandle && this.placeholder) destroyNode(this.placeholder)
   }

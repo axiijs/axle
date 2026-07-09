@@ -3,7 +3,7 @@ import { atom, batch, RxList } from 'data0'
 import { Group } from 'leafer-ui'
 import type { IText, IUI } from 'leafer-ui'
 import { createRoot } from '@axiijs/axle'
-import type { Host } from '@axiijs/axle'
+import type { Host, Props, RenderContext } from '@axiijs/axle'
 import { contentChildren, mount, texts, tick } from './helpers.js'
 
 /**
@@ -554,5 +554,321 @@ describe('atom 文本更新抛错（对齐 root.on("error") 语义）', () => {
     } finally {
       consoleError.mockRestore()
     }
+  })
+})
+
+describe('组件生命周期回调抛错（useEffect / useLayoutEffect，doc/02 §3.4）', () => {
+  it('useEffect 抛错（有钩子）：错误进钩子、组件区域保留、兄弟 effect 照常执行', () => {
+    let siblingRan = 0
+    function Comp(_: Props, { useEffect }: RenderContext) {
+      useEffect(() => {
+        throw new Error('effect boom')
+      })
+      useEffect(() => {
+        siblingRan++
+      })
+      return <rect width={7} />
+    }
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        <Comp />
+      </group>,
+    )
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(siblingRan).toBe(1)
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([7])
+  })
+
+  it('useEffect 抛错（无钩子，初次渲染）：保持向上抛（在用户 render 调用栈上）', () => {
+    function Comp(_: Props, { useEffect }: RenderContext) {
+      useEffect(() => {
+        throw new Error('effect boom')
+      })
+      return <rect />
+    }
+    expect(() =>
+      mount(
+        <group>
+          <Comp />
+        </group>,
+      ),
+    ).toThrow('effect boom')
+  })
+
+  it('layoutEffect 抛错（有钩子，动态挂载经过连通队列）：已渲染区域保留、同批兄弟 layoutEffect 照常执行', async () => {
+    let siblingRan = 0
+    function Bomb(_: Props, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        throw new Error('layout boom')
+      })
+      return <rect width={1} />
+    }
+    function Good(_: Props, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        siblingRan++
+      })
+      return <rect width={2} />
+    }
+    const show = atom(false)
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        {() =>
+          show() ? (
+            <group>
+              <Bomb />
+              <Good />
+            </group>
+          ) : null
+        }
+      </group>,
+    )
+
+    show(true)
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 同批（同一次 flushAttachQueue）的兄弟 layoutEffect 不被连坐
+    expect(siblingRan).toBe(1)
+    // 渲染已经成功的区域不能被 layoutEffect 的错误误回滚
+    const outer = contentChildren(container)[0]!
+    const inner = contentChildren(outer)[0]!
+    expect(contentChildren(inner).map((child) => (child as { width?: number }).width)).toEqual([
+      1, 2,
+    ])
+  })
+
+  it('layoutEffect 抛错（无钩子，初次渲染）：保持向上抛（在用户 render 调用栈上）', () => {
+    function Bomb(_: Props, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        throw new Error('layout boom')
+      })
+      return <rect />
+    }
+    expect(() =>
+      mount(
+        <group>
+          <Bomb />
+        </group>,
+      ),
+    ).toThrow('layout boom')
+  })
+})
+
+describe('清理回调抛错（onCleanup / effect 清理 / layoutEffect 清理，绝不向上抛）', () => {
+  function makeRow(renders: { count: number }, cleanupLog: number[]) {
+    return function Row({ value }: { value?: unknown }, { onCleanup }: RenderContext) {
+      renders.count++
+      const v = value as number
+      onCleanup(() => {
+        if (v === 2) throw new Error('cleanup boom')
+        cleanupLog.push(v)
+      })
+      return <rect width={v} />
+    }
+  }
+
+  it('行 onCleanup 抛错（有钩子）：错误进钩子、splice 正常完成、无辜行不被整表重建', () => {
+    const renders = { count: 0 }
+    const cleanupLog: number[] = []
+    const Row = makeRow(renders, cleanupLog)
+    const items = new RxList<number>([1, 2, 3])
+    const { container, root, onError } = mountWithErrorHook(
+      <group>{items.map((value) => <Row value={value} />)}</group>,
+    )
+    const [group] = contentChildren(container)
+    const widths = () => contentChildren(group!).map((child) => (child as { width?: number }).width)
+    const rendersBefore = renders.count
+
+    items.splice(1, 1) // 只删坏行（value 2）
+    expect(onError).toHaveBeenCalledTimes(1)
+    // CAUTION 单行的清理错误不允许升级为整列表 rebuildAllRows：无辜行不重建
+    expect(renders.count).toBe(rendersBefore)
+    expect(widths()).toEqual([1, 3])
+    expect(findListHost(root.host).hosts.length).toBe(2)
+
+    // 后续 patch 照常
+    items.push(4)
+    expect(widths()).toEqual([1, 3, 4])
+  })
+
+  it('行 onCleanup 抛错（无钩子）：console.error 报告、splice 正常完成、不从写入点抛出', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const renders = { count: 0 }
+      const cleanupLog: number[] = []
+      const Row = makeRow(renders, cleanupLog)
+      const items = new RxList<number>([1, 2, 3])
+      const { container } = mount(<group>{items.map((value) => <Row value={value} />)}</group>)
+      const [group] = contentChildren(container)
+      const rendersBefore = renders.count
+
+      expect(() => items.splice(1, 1)).not.toThrow()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(renders.count).toBe(rendersBefore)
+      expect(
+        contentChildren(group!).map((child) => (child as { width?: number }).width),
+      ).toEqual([1, 3])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('清理回调抛错不中断兄弟清理与剩余销毁流程', () => {
+    const log: string[] = []
+    function Comp(_: Props, { onCleanup, useLayoutEffect }: RenderContext) {
+      onCleanup(() => {
+        throw new Error('cleanup boom')
+      })
+      onCleanup(() => log.push('sibling cleanup'))
+      useLayoutEffect(() => () => log.push('layout cleanup'))
+      return <rect />
+    }
+    const { container, root, onError } = mountWithErrorHook(
+      <group>
+        <Comp />
+      </group>,
+    )
+    root.destroy()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['layout cleanup', 'sibling cleanup'])
+    expect(contentChildren(container)).toEqual([])
+  })
+
+  it('函数 child 的 onCleanup 抛错（有钩子）：错误进钩子、本次重算照常完成', async () => {
+    const value = atom(1)
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        {({ onCleanup }: { onCleanup: (fn: () => unknown) => void }) => {
+          onCleanup(() => {
+            throw new Error('fn cleanup boom')
+          })
+          return String(value())
+        }}
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    expect(texts(group!)).toEqual(['1'])
+
+    value(2)
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(texts(group!)).toEqual(['2']) // 清理抛错不中断本次重算
+  })
+
+  it('函数 child 的 onCleanup 抛错（无钩子）：console.error 报告、本次重算照常完成', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const value = atom(1)
+      const { container } = mount(
+        <group>
+          {({ onCleanup }: { onCleanup: (fn: () => unknown) => void }) => {
+            onCleanup(() => {
+              throw new Error('fn cleanup boom')
+            })
+            return String(value())
+          }}
+        </group>,
+      )
+      const [group] = contentChildren(container)
+
+      value(2)
+      await tick()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(texts(group!)).toEqual(['2'])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
+describe('error 钩子自身抛错（必须就地隔离）', () => {
+  it('行错误恢复中钩子抛错：console.error 隔离、列表簿记不损毁、后续写入不抛', () => {
+    // CAUTION 回归测试：钩子的异常若从 dispatch 冒出去，会击穿 data0 的
+    //  runSimplePatch（无 try/finally）把 computed 永久卡死——此后每次
+    //  list 写入都同步抛 "detect recompute triggerred in sync recompute"。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const container = new Group() as unknown as IUI
+      const root = createRoot(container)
+      root.on('error', () => {
+        throw new Error('hook boom')
+      })
+      const items = new RxList<unknown>(['a'])
+      root.render(<group>{items}</group>)
+      const [group] = contentChildren(container)
+
+      expect(() => items.push(badChild)).not.toThrow()
+      expect(consoleError).toHaveBeenCalledTimes(1) // 钩子自身的错误被报告
+      expect(findListHost(root.host).hosts.length).toBe(2) // 坏行降级为空行
+
+      // 列表没有被损毁：后续写入不抛、正常渲染
+      expect(() => items.push('b')).not.toThrow()
+      expect(texts(group!)).toEqual(['a', 'b'])
+      expect(findListHost(root.host).hosts.length).toBe(3)
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('初次渲染错误 + 钩子抛错：仍视为已消费（区域降级），应用不崩', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const container = new Group() as unknown as IUI
+      const root = createRoot(container)
+      root.on('error', () => {
+        throw new Error('hook boom')
+      })
+      const Bad = () => {
+        throw new Error('component failed')
+      }
+      expect(() =>
+        root.render(
+          <group>
+            <rect width={1} />
+            <Bad />
+          </group>,
+        ),
+      ).not.toThrow()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      const [group] = contentChildren(container)
+      expect(contentChildren(group!).map((child) => child.tag)).toEqual(['Rect'])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
+
+describe('事务回滚时半渲染元素的资源释放', () => {
+  it('children 渲染抛错回滚后，未插入场景图的元素节点也被 destroy（不泄漏 leafer 资源）', () => {
+    let capturedUI: (IUI & { destroy: () => void }) | undefined
+    let destroySpy: ReturnType<typeof vi.fn> | undefined
+    function Spy(_: Props, { pathContext }: RenderContext) {
+      // hostPath 的头节点是包裹本组件的 <group> ElementHost，此刻其 ui 已创建
+      // 但尚未插入场景图（children 先渲染、后插入）
+      const parentHost = (pathContext.hostPath as { host: { ui?: IUI } }).host
+      capturedUI = parentHost.ui as IUI & { destroy: () => void }
+      const original = capturedUI.destroy.bind(capturedUI)
+      destroySpy = vi.fn(original)
+      capturedUI.destroy = destroySpy as unknown as () => void
+      return null
+    }
+    const items = new RxList<unknown>([])
+    const { container, root, onError } = mountWithErrorHook(<group>{items}</group>)
+    const [group] = contentChildren(container)
+
+    items.push(
+      <group>
+        <Spy />
+        {badChild as never}
+      </group>,
+    )
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 行降级为空行，场景图无孤儿
+    expect(contentChildren(group!)).toEqual([])
+    expect(findListHost(root.host).hosts.length).toBe(1)
+    // 半渲染的 <group> ui 从未入场景图，但必须被 destroy 释放 leafer 资源
+    expect(capturedUI).toBeTruthy()
+    expect(capturedUI!.parent).toBeFalsy()
+    expect(destroySpy).toHaveBeenCalled()
   })
 })

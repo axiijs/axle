@@ -5,6 +5,7 @@ import { linkHost } from './Host.js'
 import { DeferredBindingEffect } from './BindingEffect.js'
 import { createHost } from './createHost.js'
 import { createPlaceholder, createUI, destroyNode, insertBefore } from './leafer.js'
+import { runCleanupIsolated } from './util.js'
 
 type FunctionNodeContext = {
   onCleanup: (cleanup: () => unknown) => void
@@ -50,7 +51,12 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     const cleanups = this.cleanups
     if (cleanups?.length) {
       this.cleanups = undefined
-      for (const cleanup of cleanups) cleanup()
+      // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：runCleanups
+      // 运行在微任务重算 / destroy 链（可能在 data0 patch）里，抛出会中断
+      // 兄弟清理与本次重算/销毁流程。
+      for (const cleanup of cleanups) {
+        runCleanupIsolated(this.pathContext.root, cleanup, 'function child cleanup')
+      }
     }
   }
   render(): void {
