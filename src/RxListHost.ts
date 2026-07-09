@@ -194,7 +194,13 @@ export class RxListHost implements Host {
   }
   handleSplice(argv: unknown[], deletedItems?: unknown[]): void {
     const hosts = this.hosts!
-    const start = argv[0] as number
+    // CAUTION data0 的 splice 委托原生 Array.prototype.splice（支持负 start 与
+    //  越界 start），triggerInfo 里的 argv 是未归一化的原始参数。这里必须按
+    //  原生语义归一化（基于 splice 前的长度，即当前 hosts.length），否则
+    //  findAnchor(负数) 会取到错误锚点，新行被静默降级为空行。
+    const rawStart = argv[0] as number
+    const start =
+      rawStart < 0 ? Math.max(hosts.length + rawStart, 0) : Math.min(rawStart, hosts.length)
     const deleteCount = deletedItems ? deletedItems.length : 0
     const newItems = argv.slice(2)
 
