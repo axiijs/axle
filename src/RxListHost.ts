@@ -118,7 +118,13 @@ export class RxListHost implements Host {
   }
   handleSplice(argv: unknown[], deletedItems?: unknown[]): void {
     const hosts = this.hosts!
-    const start = argv[0] as number
+    // CAUTION data0 透传的是原始 splice 参数，start 可能是负数或越界
+    //  （`Array.prototype.splice` 语义）。hosts.splice 本身按原生语义处理，
+    //  但 findAnchor 的锚点计算需要规范化后的下标，否则场景图顺序会与
+    //  数据分叉（如 splice(-1, 1, x) 会把新行插到列表头）。
+    const rawStart = argv[0] as number
+    const start =
+      rawStart < 0 ? Math.max(hosts.length + rawStart, 0) : Math.min(rawStart, hosts.length)
     const deleteCount = deletedItems ? deletedItems.length : 0
     const newItems = argv.slice(2)
 
