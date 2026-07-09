@@ -3,7 +3,7 @@ import type { Computed, TrackOpTypes, TriggerInfo, TriggerOpTypes } from 'data0'
 import type { IUI } from 'leafer-ui'
 import type { Host, PathContext } from './Host.js'
 import { linkHost } from './Host.js'
-import { createHost } from './createHost.js'
+import { createHost, EmptyHost } from './createHost.js'
 import { createPlaceholder, insertBefore } from './leafer.js'
 import { destroyNode } from './leafer.js'
 import { assert } from './util.js'
@@ -43,13 +43,77 @@ export class RxListHost implements Host {
     nodes.push(this.placeholder)
     return nodes
   }
-  /** 在 anchor 之前创建并渲染一个行 host */
+  /**
+   * 在 anchor 之前创建并渲染一个行 host。
+   *
+   * CAUTION 本方法保证不抛错、必然返回一个可用的行 host：行渲染中途抛错时
+   *  回滚该行已进入场景图的节点并降级为空行（EmptyHost），错误交给
+   *  root error 钩子（未注册时 console.error 报告，见 recoverFailedRow）。
+   *  这样无论哪一行失败，hosts 簿记与场景图始终一一对应，
+   *  列表的后续 splice/reorder 不会基于错误簿记操作场景图。
+   */
   createRowHost(item: unknown, anchor: IUI): Host {
+    // boundary（本行区间的前界）与 anchor（后界）都不属于本行，
+    // 行渲染只会在两者之间插入节点，渲染期间两者都稳定，可用于失败回滚。
+    const parentChildren = anchor.parent?.children
+    const anchorIndex = parentChildren ? parentChildren.indexOf(anchor) : -1
+    const boundary = anchorIndex > 0 ? (parentChildren![anchorIndex - 1] as IUI) : null
     const rowPlaceholder = createPlaceholder('list row')
     insertBefore(rowPlaceholder, anchor)
-    const host = createHost(item, rowPlaceholder, this.rowContext!)
-    host.render()
-    return host
+    let host: Host | undefined
+    try {
+      host = createHost(item, rowPlaceholder, this.rowContext!)
+      host.render()
+      return host
+    } catch (error) {
+      return this.recoverFailedRow(error, host, boundary, anchor)
+    }
+  }
+  /** 行渲染失败的回滚与降级，见 createRowHost 的说明 */
+  private recoverFailedRow(
+    error: unknown,
+    partialHost: Host | undefined,
+    boundary: IUI | null,
+    anchor: IUI,
+  ): Host {
+    // 1. 尽力清理半渲染 host 已建立的绑定/effect/ref（parentHandle 模式不碰场景图，
+    //    节点由下面的区间回滚整体移除）
+    if (partialHost) {
+      try {
+        partialHost.destroy(true)
+      } catch {
+        // 半渲染 host 的清理是尽力而为，剩余节点由区间回滚兜底
+      }
+    }
+    // 2. 回滚该行已进入场景图的全部顶层节点（(boundary, anchor) 开区间）。
+    //    boundary/anchor 理论上都稳定；万一找不到（区间被外部破坏），
+    //    宁可跳过回滚也不能误删相邻行的节点。
+    const parent = anchor.parent
+    if (parent?.children) {
+      const endIndex = parent.children.indexOf(anchor)
+      const boundaryIndex = boundary ? parent.children.indexOf(boundary) : -1
+      const startIndex = boundary ? (boundaryIndex >= 0 ? boundaryIndex + 1 : endIndex) : 0
+      if (endIndex > startIndex) {
+        const orphans = parent.children.slice(startIndex, endIndex) as IUI[]
+        for (const orphan of orphans) destroyNode(orphan)
+      }
+    }
+    // 3. 降级为空行，保证 hosts 簿记与场景图一致
+    const rowPlaceholder = createPlaceholder('list row')
+    insertBefore(rowPlaceholder, anchor)
+    const emptyRow = new EmptyHost(rowPlaceholder, this.rowContext!)
+    // 4. 错误交给 root error 钩子。未注册钩子时用 console.error 报告，
+    //    CAUTION 不能向上抛：行创建运行在 data0 computed 的 getter/patch 里，
+    //    data0 的 fullRecompute/patchRecompute 是 async 函数，向上抛只会变成
+    //    unhandled rejection（应用侧无法捕获），而且 data0 的 callSimpleGetter/
+    //    runSimplePatch 没有 try/finally 恢复，抛错还会让全局依赖追踪栈失衡。
+    this.reportRowError(error)
+    return emptyRow
+  }
+  private reportRowError(error: unknown): void {
+    if (!this.pathContext.root.dispatch('error', error)) {
+      console.error('[axle] list row render failed, the row is rendered empty:', error)
+    }
   }
   /** 从 index 开始（含 index）向后找第一个已渲染行的首节点，找不到则用 list 占位符 */
   findAnchor(index: number): IUI {
@@ -92,7 +156,19 @@ export class RxListHost implements Host {
         this.pauseCollectChild()
         try {
           for (const info of triggerInfos) {
-            host.applyTriggerInfo(info)
+            // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled
+            //  rejection（patchRecompute 是 async 函数），且 data0 的 runSimplePatch
+            //  没有 try/finally，抛错会让 computed 卡在中间状态。
+            //  行渲染错误不会走到这里（createRowHost 内部已降级消化），这里兜底的
+            //  是 reorder/未知 patch 等结构性错误：交给 root error 钩子，
+            //  未注册钩子时 console.error 报告后继续处理后续 patch。
+            try {
+              host.applyTriggerInfo(info)
+            } catch (error) {
+              if (!host.pathContext.root.dispatch('error', error)) {
+                console.error('[axle] RxList patch failed:', error)
+              }
+            }
           }
         } finally {
           this.resumeCollectChild()
