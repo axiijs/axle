@@ -67,6 +67,37 @@ patch（预留口子）、leafer-editor 集成（Phase 3）、§12 全部。
 （`viewRect`），而非 §2.2 伪代码里直接传 `RxViewport`——屏幕→页面换算需要
 视口像素尺寸，getter 形式让模块与引擎解耦、可脱离 leafer 单测，语义等价。
 
+### 热路径常数收敛（post-v6 优化批次）
+
+核心路径验收达标后的一轮常数因子收敛，行为契约不变（全部有测试覆盖）：
+
+- **窗口化增量判定**：触发源 3（索引 write-through 变更）不再触发全量
+  重算——只对变更条目基于缓存窗口做进出判断并修补队列（含撤销反向
+  任务）。拖拽帧上「卡片 + 邻接连线逐帧更新索引」从
+  「全量查询 + diff + 三次排序/帧」降为 O(变更条目数)；
+- **队列游标化 + 挂载批量 splice**：预算队列用游标消化（替代 O(n) 的
+  shift），同帧多个挂载合并为一次多行 splice（批 4，减少 trigger 派发）；
+  卸载/替换的行定位用下标提示 Map（均摊 O(1)，替代 rowIds.indexOf）；
+- **空间索引**：`forEachIn` 用「主 cell clamp 判定」做零分配去重（删掉
+  每查询一个 seen Set）；`forEachCell` 的主格计数改为 set/delete 时增量
+  维护，dot 档密度聚合重绘从 O(视口内条目数) 降为 O(相交 cell 数)；
+- **引擎桥**：`bindPosition`（单 effect 写双轴，no-op 求值减半）与
+  `coalesce`（同帧 x/y 轴事件合并为一次微任务写穿，下游连线/索引/底衬
+  失效每帧减半）两个可选项；
+- **DotLayer**：脏区从单一并集改为至多 8 个矩形（相交合并、溢出并入
+  增长最小者），协同场景多点变更不再撑成整层重绘；绘制循环缓存
+  fillStyle，同色连续块只做一次状态切换；
+- **Host 层**：AtomHost/FunctionHost 与各自的绑定 effect 合并为同一对象
+  （每绑定省一个对象 + 一个闭包）；ComponentHost 的 effect/回调集合惰性
+  分配，render 后销毁自己的占位符（区间委托给 innerHost，每组件少一个
+  常驻场景图节点，02 号文档契约已同步修订）；
+- **杂项**：`insertBefore` 尾部锚点快速路径（窗口化挂载的主路径不再
+  线性扫 children）；`RxViewportInteracting` 改惰性单定时器（手势帧不再
+  每事件一对 clearTimeout/setTimeout）；压测页连线 path 改 leafer 命令
+  数组（省字符串构造 + 引擎解析）。
+- **配套**：`scripts/stress-smoke.mjs`（headless Chrome 对压测页的
+  端到端冒烟，覆盖 §10 验收标准的自动化子集）。
+
 > 修订记录：
 >
 > - v2 依据深度 review 重构了三处设计——LOD 结构切换收归窗口化层的

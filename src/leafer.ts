@@ -55,11 +55,15 @@ export function isPlaceholder(node: IUI): boolean {
 export function insertBefore(node: IUI, anchor: IUI): void {
   const parent = anchor.parent
   assert(parent, 'cannot insert before a detached anchor node')
-  let anchorIndex = parent.children.indexOf(anchor)
+  const children = parent.children
+  // 追加快速路径：列表挂载（窗口化的主路径）的锚点是常驻的 list 占位符，
+  // 通常就是最后一个 child——先查尾部避免整条 children 的线性扫描。
+  const last = children.length - 1
+  let anchorIndex = children[last] === anchor ? last : children.indexOf(anchor)
   // CAUTION Leafer 的 addBefore 先取 before 的下标再 remove child，
   //  同父前向搬移时下标会右偏一位，这里自己修正后用 add(child, index)。
   if (node.parent === parent) {
-    const nodeIndex = parent.children.indexOf(node)
+    const nodeIndex = children.indexOf(node)
     if (nodeIndex >= 0 && nodeIndex < anchorIndex) anchorIndex--
   }
   parent.add(node, anchorIndex)

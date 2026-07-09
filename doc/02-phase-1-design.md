@@ -130,8 +130,12 @@ interface Host {
 
 - `ElementHost` / `PrimitiveHost` / `AtomHost` / `RawUIHost`：内容节点本身稳定，
   render 完成后**立刻移除占位符**，`getNodes()` 只含内容节点。
-- `EmptyHost` / `FunctionHost` / `StaticArrayHost` / `RxListHost` / `ComponentHost`：
+- `EmptyHost` / `FunctionHost` / `StaticArrayHost` / `RxListHost`：
   区间结构可变（或可能为空），占位符**常驻**，作为 `getNodes()` 的最后一个节点。
+- `ComponentHost`：组件只执行一次，区间完全由 innerHost 决定（结构可变的
+  innerHost 自带常驻占位符，区间永远非空），render 完成后**销毁自己的占位符**、
+  区间委托给 innerHost——虚拟化滚动中组件反复挂卸，每个组件实例少一个常驻
+  场景图节点。
 
 ### 3.2 FunctionHost
 

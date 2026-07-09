@@ -1,6 +1,7 @@
 import { UI, UIData, dataProcessor } from 'leafer-ui'
 import type { ILeaferCanvas, IRenderOptions, IUIData } from 'leafer-ui'
 import type { IndexBounds, SpatialIndex } from './spatialIndex.js'
+import { boundsIntersect } from './spatialIndex.js'
 
 /**
  * DotLayer：常驻底衬层（05 号文档 §3.3）。**一个**自定义 UI 节点，
@@ -46,6 +47,13 @@ export type DotLayerOptions<Id> = {
 
 const DEFAULT_COLOR = '#5b6472'
 
+/**
+ * 同帧脏区的上限：协同场景下同一帧多个相距很远的条目变更，若合并成单一并集
+ * 会撑成近乎整层的重绘区域。改为维护至多 N 个脏矩形（相交的自动合并，
+ * 溢出时并入「面积增长最小」的一个），失效成本回到 O(实际变更区域)。
+ */
+const MAX_DIRTY_RECTS = 8
+
 /** 自定义 leafer 元素：绘制完全代理给 onDrawContent（局部坐标 = 页面坐标 - x/y） */
 export class DotLayerUI extends UI {
   get __tag(): string {
@@ -85,7 +93,7 @@ dataProcessor(UIData)(DotLayerUI.prototype)
 export class DotLayer<Id> {
   readonly ui: DotLayerUI
   private unsubscribe: () => void
-  private dirty: IndexBounds | null = null
+  private dirtyRects: IndexBounds[] = []
   private cancelFrame: (() => void) | null = null
   private readonly schedule: (callback: () => void) => () => void
   private destroyed = false
@@ -112,21 +120,45 @@ export class DotLayer<Id> {
     // 局部 forceRender。本地拖拽/视口变化产生的脏区会顺带盖住本层,
     // 这条通道保证「纯数据变更」（协同/程序化移动、增删未挂载条目）也能刷新。
     this.unsubscribe = options.index.subscribe((change) => {
-      let region = this.dirty
       for (const bounds of [change.oldBounds, change.newBounds]) {
         if (!bounds) continue
         // 外扩 1px + inset，抵消色块内缩与取整误差
-        const expanded: IndexBounds = {
+        this.addDirtyRect({
           x: bounds.x - 1,
           y: bounds.y - 1,
           width: bounds.width + 2,
           height: bounds.height + 2,
-        }
-        region = region ? unionBounds(region, expanded) : expanded
+        })
       }
-      this.dirty = region
       this.scheduleInvalidate()
     })
+  }
+
+  /** 相交的脏区就地合并；溢出时并入面积增长最小的一个（见 MAX_DIRTY_RECTS） */
+  private addDirtyRect(rect: IndexBounds): void {
+    const rects = this.dirtyRects
+    // 拖拽帧的新旧包围盒通常相邻/重叠，优先与既有脏区合并
+    for (let i = 0; i < rects.length; i++) {
+      if (boundsIntersect(rects[i]!, rect)) {
+        rects[i] = unionBounds(rects[i]!, rect)
+        return
+      }
+    }
+    if (rects.length < MAX_DIRTY_RECTS) {
+      rects.push(rect)
+      return
+    }
+    let best = 0
+    let bestGrowth = Infinity
+    for (let i = 0; i < rects.length; i++) {
+      const union = unionBounds(rects[i]!, rect)
+      const growth = union.width * union.height - rects[i]!.width * rects[i]!.height
+      if (growth < bestGrowth) {
+        bestGrowth = growth
+        best = i
+      }
+    }
+    rects[best] = unionBounds(rects[best]!, rect)
   }
 
   private scheduleInvalidate(): void {
@@ -139,21 +171,23 @@ export class DotLayer<Id> {
 
   /** 立即对累计的脏区做一次失效（测试 / 需要同步刷新的场景用） */
   invalidate(): void {
-    const region = this.dirty
-    this.dirty = null
-    if (!region) return
+    const rects = this.dirtyRects
+    if (!rects.length) return
+    this.dirtyRects = []
     const leafer = this.ui.leafer
     if (!leafer) return
     // 页面坐标 → 局部 → 世界坐标（viewport 只有平移缩放，直接用世界矩阵换算）
     const world = this.ui.__world
     const offsetX = this.ui.x ?? 0
     const offsetY = this.ui.y ?? 0
-    leafer.forceRender({
-      x: (region.x - offsetX) * world.a + world.e,
-      y: (region.y - offsetY) * world.d + world.f,
-      width: region.width * world.a,
-      height: region.height * world.d,
-    })
+    for (const region of rects) {
+      leafer.forceRender({
+        x: (region.x - offsetX) * world.a + world.e,
+        y: (region.y - offsetY) * world.d + world.f,
+        width: region.width * world.a,
+        height: region.height * world.d,
+      })
+    }
   }
 
   private drawContent(ctx: CanvasRenderingContext2D, drawRect: IndexBounds, scale: number): void {
@@ -163,13 +197,21 @@ export class DotLayer<Id> {
     const aggregateBelowPx = this.options.aggregateBelowPx ?? 4
     const typicalItemSize = this.options.typicalItemSize ?? 200
 
+    // fillStyle 赋值是 canvas 状态切换（含颜色字符串解析），同色连续块只设一次。
+    // 单色底衬 / 密度聚合的相邻同数量格是常态，收益直接进 dot 档整层重绘路径。
+    let lastFill: string | null = null
+
     if (typicalItemSize * scale < aggregateBelowPx) {
       // 密度聚合档：一格一矩形，透明度随数量加深
       const aggregateColor =
         this.options.aggregateColor ??
         ((count: number) => `rgba(122, 162, 255, ${Math.min(0.85, 0.18 + count * 0.04)})`)
       index.forEachCell(drawRect, (cellBounds, count) => {
-        ctx.fillStyle = aggregateColor(count)
+        const fill = aggregateColor(count)
+        if (fill !== lastFill) {
+          ctx.fillStyle = fill
+          lastFill = fill
+        }
         ctx.fillRect(cellBounds.x, cellBounds.y, cellBounds.width, cellBounds.height)
       })
       return
@@ -181,7 +223,10 @@ export class DotLayer<Id> {
       const width = bounds.width - inset * 2
       const height = bounds.height - inset * 2
       if (width <= 0 || height <= 0) return
-      ctx.fillStyle = fill
+      if (fill !== lastFill) {
+        ctx.fillStyle = fill
+        lastFill = fill
+      }
       ctx.fillRect(bounds.x + inset, bounds.y + inset, width, height)
     })
   }

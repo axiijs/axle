@@ -28,7 +28,8 @@ export type SpatialIndexChange<Id> = {
 
 export type SpatialIndexListener<Id> = (change: SpatialIndexChange<Id>) => void
 
-type Entry = {
+type Entry<Id> = {
+  id: Id
   bounds: IndexBounds
   minCx: number
   minCy: number
@@ -42,8 +43,15 @@ export function boundsIntersect(a: IndexBounds, b: IndexBounds): boolean {
 
 export class SpatialIndex<Id> {
   readonly cellSize: number
-  private entries = new Map<Id, Entry>()
-  private cells = new Map<number, Set<Id>>()
+  private entries = new Map<Id, Entry<Id>>()
+  /** cell key → 与该 cell 相交的条目集合（存 Entry 引用，遍历时不需要再查 entries） */
+  private cells = new Map<number, Set<Entry<Id>>>()
+  /**
+   * cell key → 以该 cell 为主 cell（包围盒左上角所在 cell）的条目数。
+   * set/delete 时增量维护，`forEachCell` 因此是 O(相交 cell 数) 而不是
+   * O(相交条目数)——dot 档密度聚合整层重绘的成本与条目总量解耦。
+   */
+  private homeCounts = new Map<number, number>()
   private listeners = new Set<SpatialIndexListener<Id>>()
 
   constructor(options?: { cellSize?: number }) {
@@ -93,21 +101,21 @@ export class SpatialIndex<Id> {
         existing.maxCx !== maxCx ||
         existing.maxCy !== maxCy
       ) {
-        this.removeFromCells(id, existing)
+        this.removeFromCells(existing)
         existing.minCx = minCx
         existing.minCy = minCy
         existing.maxCx = maxCx
         existing.maxCy = maxCy
-        this.addToCells(id, existing)
+        this.addToCells(existing)
       }
       existing.bounds = next
       this.notify({ id, oldBounds: old, newBounds: next })
       return
     }
 
-    const entry: Entry = { bounds: next, minCx, minCy, maxCx, maxCy }
+    const entry: Entry<Id> = { id, bounds: next, minCx, minCy, maxCx, maxCy }
     this.entries.set(id, entry)
-    this.addToCells(id, entry)
+    this.addToCells(entry)
     this.notify({ id, oldBounds: null, newBounds: next })
   }
 
@@ -115,7 +123,7 @@ export class SpatialIndex<Id> {
     const entry = this.entries.get(id)
     if (!entry) return false
     this.entries.delete(id)
-    this.removeFromCells(id, entry)
+    this.removeFromCells(entry)
     this.notify({ id, oldBounds: entry.bounds, newBounds: null })
     return true
   }
@@ -135,17 +143,16 @@ export class SpatialIndex<Id> {
     const minCy = Math.floor(rect.y / this.cellSize)
     const maxCx = Math.floor((rect.x + rect.width) / this.cellSize)
     const maxCy = Math.floor((rect.y + rect.height) / this.cellSize)
-    // 跨多个 cell 的条目会出现在多个集合里，用 seen 去重
-    const seen = new Set<Id>()
     for (let cy = minCy; cy <= maxCy; cy++) {
       for (let cx = minCx; cx <= maxCx; cx++) {
         const cell = this.cells.get(cellKey(cx, cy))
         if (!cell) continue
-        for (const id of cell) {
-          if (seen.has(id)) continue
-          seen.add(id)
-          const bounds = this.entries.get(id)!.bounds
-          if (boundsIntersect(bounds, rect)) callback(id, bounds)
+        for (const entry of cell) {
+          // 跨多个 cell 的条目会出现在多个集合里。零分配去重：只在
+          // 「条目主 cell 被 clamp 进查询范围后的那个 cell」上报——
+          // 每个条目在查询范围内恰好有一个这样的 cell，不需要 seen 集合。
+          if (cx !== Math.max(entry.minCx, minCx) || cy !== Math.max(entry.minCy, minCy)) continue
+          if (boundsIntersect(entry.bounds, rect)) callback(entry.id, entry.bounds)
         }
       }
     }
@@ -154,7 +161,8 @@ export class SpatialIndex<Id> {
   /**
    * 按网格聚合遍历与 rect 相交的 cell（DotLayer 超高密度档的密度块绘制）。
    * count 是「以该 cell 为主 cell（包围盒左上角所在 cell）」的条目数，
-   * 保证一个条目只计入一次。
+   * 保证一个条目只计入一次。计数在 set/delete 时增量维护（homeCounts），
+   * 本方法是 O(相交 cell 数)，与条目总量无关。
    */
   forEachCell(rect: IndexBounds, callback: (cellBounds: IndexBounds, count: number) => void): void {
     const minCx = Math.floor(rect.x / this.cellSize)
@@ -163,13 +171,7 @@ export class SpatialIndex<Id> {
     const maxCy = Math.floor((rect.y + rect.height) / this.cellSize)
     for (let cy = minCy; cy <= maxCy; cy++) {
       for (let cx = minCx; cx <= maxCx; cx++) {
-        const cell = this.cells.get(cellKey(cx, cy))
-        if (!cell?.size) continue
-        let count = 0
-        for (const id of cell) {
-          const entry = this.entries.get(id)!
-          if (entry.minCx === cx && entry.minCy === cy) count++
-        }
+        const count = this.homeCounts.get(cellKey(cx, cy))
         if (!count) continue
         callback(
           {
@@ -199,27 +201,33 @@ export class SpatialIndex<Id> {
     for (const listener of this.listeners) listener(change)
   }
 
-  private addToCells(id: Id, entry: Entry): void {
+  private addToCells(entry: Entry<Id>): void {
     for (let cy = entry.minCy; cy <= entry.maxCy; cy++) {
       for (let cx = entry.minCx; cx <= entry.maxCx; cx++) {
         const key = cellKey(cx, cy)
         let cell = this.cells.get(key)
         if (!cell) this.cells.set(key, (cell = new Set()))
-        cell.add(id)
+        cell.add(entry)
       }
     }
+    const homeKey = cellKey(entry.minCx, entry.minCy)
+    this.homeCounts.set(homeKey, (this.homeCounts.get(homeKey) ?? 0) + 1)
   }
 
-  private removeFromCells(id: Id, entry: Entry): void {
+  private removeFromCells(entry: Entry<Id>): void {
     for (let cy = entry.minCy; cy <= entry.maxCy; cy++) {
       for (let cx = entry.minCx; cx <= entry.maxCx; cx++) {
         const key = cellKey(cx, cy)
         const cell = this.cells.get(key)
         if (!cell) continue
-        cell.delete(id)
+        cell.delete(entry)
         if (!cell.size) this.cells.delete(key)
       }
     }
+    const homeKey = cellKey(entry.minCx, entry.minCy)
+    const count = this.homeCounts.get(homeKey)!
+    if (count > 1) this.homeCounts.set(homeKey, count - 1)
+    else this.homeCounts.delete(homeKey)
   }
 }
 

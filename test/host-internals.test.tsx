@@ -177,7 +177,7 @@ describe('atom rows in lists', () => {
 })
 
 describe('component host getNodes after render', () => {
-  it('includes inner nodes plus own placeholder', () => {
+  it('elides its own placeholder after render (interval delegates to the inner host)', () => {
     const { pathContext, placeholder, container } = makeContext()
     function Comp() {
       return <rect />
@@ -189,11 +189,32 @@ describe('component host getNodes after render', () => {
     )
     host.render()
     const nodes = host.getNodes()
-    // ElementHost 的 ui + component 自己的占位符
-    expect(nodes.length).toBe(2)
+    // 占位符省略：区间只有 ElementHost 的 ui，组件不再保留常驻占位符
+    expect(nodes.length).toBe(1)
     expect(nodes[0]!.tag).toBe('Rect')
-    expect(nodes[1]).toBe(placeholder)
     expect(host.firstNode).toBe(nodes[0])
+    // 场景图里也没有残留的组件占位符
+    expect(container.children!.length).toBe(1)
+    host.destroy()
+    expect(container.children!.length).toBe(0)
+  })
+
+  it('a component returning null keeps an anchor through its inner EmptyHost', () => {
+    const { pathContext, placeholder, container } = makeContext()
+    function Empty() {
+      return null
+    }
+    const host = createHost(
+      { $$typeof: Symbol.for('axle.node'), type: Empty, props: {} },
+      placeholder,
+      pathContext,
+    )
+    host.render()
+    // EmptyHost 的常驻占位符充当组件区间的锚点
+    const nodes = host.getNodes()
+    expect(nodes.length).toBe(1)
+    expect(host.firstNode).toBe(nodes[0])
+    expect(container.children!.length).toBe(1)
     host.destroy()
     expect(container.children!.length).toBe(0)
   })

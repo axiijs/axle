@@ -103,4 +103,56 @@ describe('SpatialIndex', () => {
       { x: 100, y: 0, count: 1 }, // 3
     ])
   })
+
+  it('forEachIn reports a cross-cell entry exactly once even when its home cell is outside the rect', () => {
+    const index = new SpatialIndex<string>({ cellSize: 100 })
+    // 主 cell 是 (0,0)，但条目横跨到 (3,0)；查询范围只覆盖 (2,0)-(3,0)
+    index.set('wide', { x: 10, y: 10, width: 340, height: 20 })
+    // 同理竖跨：主 cell (2,1)，跨到 (2,3)
+    index.set('tall', { x: 210, y: 110, width: 20, height: 240 })
+
+    const seen: string[] = []
+    index.forEachIn({ x: 200, y: 0, width: 190, height: 90 }, (id) => seen.push(id))
+    expect(seen.sort()).toEqual(['wide']) // 只报一次，且不漏报
+
+    const seen2: string[] = []
+    index.forEachIn({ x: 200, y: 110, width: 90, height: 180 }, (id) => seen2.push(id))
+    expect(seen2).toEqual(['tall'])
+
+    // 查询完整覆盖两个条目的全部 cell，同样只各报一次
+    const all: string[] = []
+    index.forEachIn({ x: -50, y: -50, width: 600, height: 600 }, (id) => all.push(id))
+    expect(all.sort()).toEqual(['tall', 'wide'])
+  })
+
+  it('forEachCell home counts stay correct across moves and deletes (incremental maintenance)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    const countsIn = (rect: { x: number; y: number; width: number; height: number }) => {
+      const cells: { x: number; y: number; count: number }[] = []
+      index.forEachCell(rect, (bounds, count) => cells.push({ x: bounds.x, y: bounds.y, count }))
+      return cells
+    }
+    const world = { x: -100, y: -100, width: 600, height: 600 }
+
+    index.set(1, { x: 10, y: 10, width: 20, height: 20 })
+    index.set(2, { x: 40, y: 40, width: 20, height: 20 })
+    expect(countsIn(world)).toEqual([{ x: 0, y: 0, count: 2 }])
+
+    // 同 cell 内移动：占位不变，计数不变
+    index.set(1, { x: 60, y: 60, width: 20, height: 20 })
+    expect(countsIn(world)).toEqual([{ x: 0, y: 0, count: 2 }])
+
+    // 跨 cell 移动：主 cell 计数迁移
+    index.set(1, { x: 210, y: 10, width: 20, height: 20 })
+    expect(countsIn(world)).toEqual([
+      { x: 0, y: 0, count: 1 },
+      { x: 200, y: 0, count: 1 },
+    ])
+
+    // 删除：计数归零的 cell 不再上报
+    index.delete(2)
+    expect(countsIn(world)).toEqual([{ x: 200, y: 0, count: 1 }])
+    index.delete(1)
+    expect(countsIn(world)).toEqual([])
+  })
 })

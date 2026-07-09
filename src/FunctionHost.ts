@@ -1,4 +1,4 @@
-import { Notifier } from 'data0'
+import { Notifier, ReactiveEffect } from 'data0'
 import type { IUI, IText } from 'leafer-ui'
 import type { Host, PathContext } from './Host.js'
 import { linkHost } from './Host.js'
@@ -16,9 +16,13 @@ type FunctionNode = (context: FunctionNodeContext) => unknown
  * - 首次同步求值渲染，之后依赖触发合并到微任务里整块重建。
  * - 文本快速路径：函数返回原始值（string/number/boolean/null）时只创建/原地更新
  *   一个 Text 节点。
+ *
+ * CAUTION FunctionHost 自己就是绑定 effect（继承 DeferredBindingEffect），
+ *  不再为每个函数节点单独分配一个 effect 对象 + update 闭包；context 对象
+ *  只在 source 声明了参数时才分配（绝大多数函数 child 是 `() => atom()`
+ *  这类零参函数）。
  */
-export class FunctionHost implements Host {
-  effect?: DeferredBindingEffect
+export class FunctionHost extends DeferredBindingEffect implements Host {
   innerHost: Host | null = null
   textUI: IText | null = null
   cleanups: (() => unknown)[] | undefined
@@ -27,7 +31,11 @@ export class FunctionHost implements Host {
     public source: FunctionNode,
     public placeholder: IUI,
     public pathContext: PathContext,
-  ) {}
+  ) {
+    super()
+    // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame / 父 effect 接管
+    this.detachFromCreationContext()
+  }
   get firstNode(): IUI {
     return this.textUI ?? this.innerHost?.firstNode ?? this.placeholder
   }
@@ -44,18 +52,23 @@ export class FunctionHost implements Host {
     }
   }
   render(): void {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias -- sourceContext 闭包需要引用 host
-    const host = this
-    // context 对象整个 host 生命周期只创建一次
-    this.sourceContext = {
-      onCleanup(cleanup: () => unknown) {
-        ;(host.cleanups ||= []).push(cleanup)
-      },
+    // 只有 source 声明了参数（含解构 ({ onCleanup })，length 为 1）才分配
+    // context 对象 + 闭包。onCleanup 必须是独立闭包而不是方法引用，
+    // 用户可能解构后脱离 this 调用。
+    if (this.source.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias -- onCleanup 闭包需要引用 host
+      const host = this
+      this.sourceContext = {
+        onCleanup(cleanup: () => unknown) {
+          ;(host.cleanups ||= []).push(cleanup)
+        },
+      }
     }
-    this.effect = new DeferredBindingEffect((effect) =>
-      this.renderSource(effect as DeferredBindingEffect),
-    )
-    this.effect.run()
+    this.run()
+  }
+  // DeferredBindingEffect 触发时的回调（原型方法，替代构造器闭包）
+  update(): void {
+    this.renderSource(this)
   }
   renderSource(effect: DeferredBindingEffect): void {
     // 每次重算前清理上一次注册的 cleanup
@@ -97,21 +110,23 @@ export class FunctionHost implements Host {
     this.destroyInnerHost()
     const innerPlaceholder = createPlaceholder('function node')
     insertBefore(innerPlaceholder, this.placeholder)
-    const innerHost = createHost(node, innerPlaceholder, {
-      ...this.pathContext,
-      hostPath: linkHost(this, this.pathContext.hostPath),
-    })
     // 内部 host 的渲染不应该被当前 effect 追踪依赖/收集子 effect，
     // 否则内层的响应式内容变化会导致整个函数节点重算。
+    // CAUTION AtomHost/FunctionHost 这类 host 本身就是 effect，对象创建时
+    //  就可能被父 effect 收集，所以 pauseCollectChild 必须在 createHost 之前。
     Notifier.instance.pauseTracking()
     effect.pauseCollectChild()
     try {
+      const innerHost = createHost(node, innerPlaceholder, {
+        ...this.pathContext,
+        hostPath: linkHost(this, this.pathContext.hostPath),
+      })
       innerHost.render()
+      this.innerHost = innerHost
     } finally {
       effect.resumeCollectChild()
       Notifier.instance.resetTracking()
     }
-    this.innerHost = innerHost
   }
   destroyInnerHost(parentHandle = false): void {
     const host = this.innerHost
@@ -121,7 +136,9 @@ export class FunctionHost implements Host {
     }
   }
   destroy(parentHandle?: boolean): void {
-    this.effect?.destroy()
+    // CAUTION 静态 destroy 而不是 super.destroy()：Host.destroy 的第一个参数
+    //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
+    ReactiveEffect.destroy(this)
     this.runCleanups()
     this.destroyInnerHost(parentHandle)
     if (!parentHandle) {

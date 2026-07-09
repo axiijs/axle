@@ -44,6 +44,35 @@ describe('RxViewportInteracting (05 号文档 §4 交互中降级)', () => {
     leafer.destroy()
   })
 
+  it('uses a single lazy timer instead of resetting one per gesture event', async () => {
+    vi.useRealTimers()
+    const leafer = await createReadyLeafer()
+    vi.useFakeTimers()
+    const setSpy = vi.spyOn(globalThis, 'setTimeout')
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout')
+    const interacting = new RxViewportInteracting(150)
+    interacting.ref(leafer)
+
+    // 模拟 60 帧连续手势：不允许出现每事件一对 clear+set 的定时器 churn
+    for (let frame = 0; frame < 60; frame++) {
+      leafer.emit(MoveEvent.MOVE)
+      vi.advanceTimersByTime(16)
+    }
+    expect(interacting.value()).toBe(true)
+    // 60 × 16ms ≈ 960ms，惰性重挂约每 150ms 一次（≈ 7 次），远小于 60 次
+    expect(setSpy.mock.calls.length).toBeLessThanOrEqual(10)
+    expect(clearSpy).not.toHaveBeenCalled()
+
+    // 静止后按剩余时间翻转 false
+    vi.advanceTimersByTime(150)
+    expect(interacting.value()).toBe(false)
+
+    interacting.destroy()
+    setSpy.mockRestore()
+    clearSpy.mockRestore()
+    leafer.destroy()
+  })
+
   it('detach cancels the pending timer and unlistens', async () => {
     vi.useRealTimers()
     const leafer = await createReadyLeafer()

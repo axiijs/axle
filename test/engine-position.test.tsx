@@ -110,6 +110,101 @@ describe('bindEnginePosition (05 号文档 §1 事实源反转)', () => {
     leafer.destroy()
   })
 
+  it('bindPosition: the bridge owns the atom→engine direction with a single effect', async () => {
+    const leafer = await createReadyLeafer()
+    const position = atom<IPointData>({ x: 10, y: 20 })
+    const root = createRoot(leafer as unknown as IUI)
+    // 不再写 x/y 绑定，atom → 引擎由桥内部的单 effect 接管
+    root.render(<group ref={bindEnginePosition(position, { bindPosition: true })} />)
+    const group = contentChildren(leafer as unknown as IUI)[0] as IGroup
+    expect(group.x).toBe(10)
+    expect(group.y).toBe(20)
+
+    // 程序化写 atom → 经桥 effect 作用到引擎
+    position({ x: 300, y: 400 })
+    expect(group.x).toBe(300)
+    expect(group.y).toBe(400)
+
+    // 引擎侧移动 → 流入 atom；回声环一跳终止
+    let positionChanges = 0
+    group.on(PropertyEvent.CHANGE, (e: PropertyEvent) => {
+      if (e.attrName === 'x' || e.attrName === 'y') positionChanges++
+    })
+    group.x = 111
+    group.y = 222
+    expect(positionChanges).toBe(2)
+    expect(position.raw).toEqual({ x: 111, y: 222 })
+
+    // 卸载拆桥：effect 销毁，atom 写入不再作用到引擎
+    root.destroy()
+    position({ x: 1, y: 2 })
+    expect(group.x).toBe(111)
+    leafer.destroy()
+  })
+
+  it('coalesce: same-batch x/y events collapse into one write-through per frame', async () => {
+    const leafer = await createReadyLeafer()
+    const position = atom<IPointData>({ x: 0, y: 0 })
+    const onSync = vi.fn()
+    const root = createRoot(leafer as unknown as IUI)
+    root.render(
+      <group
+        ref={bindEnginePosition(position, { coalesce: true, onSync })}
+        x={() => position().x}
+        y={() => position().y}
+      />,
+    )
+    const group = contentChildren(leafer as unknown as IUI)[0] as IGroup
+
+    // 模拟一个拖拽帧：引擎同步写 x、y 两个属性 → 微任务合并为一次写穿
+    group.x = 50
+    group.y = 60
+    expect(onSync).not.toHaveBeenCalled() // 尚未到微任务
+    await Promise.resolve()
+    expect(position.raw).toEqual({ x: 50, y: 60 })
+    expect(onSync).toHaveBeenCalledTimes(1)
+    expect(onSync).toHaveBeenCalledWith({ x: 50, y: 60 })
+
+    // 第二帧：仍是每帧一次
+    group.x = 70
+    group.y = 80
+    await Promise.resolve()
+    expect(onSync).toHaveBeenCalledTimes(2)
+    expect(onSync).toHaveBeenLastCalledWith({ x: 70, y: 80 })
+
+    root.destroy()
+    leafer.destroy()
+  })
+
+  it('coalesce: echo writes are absorbed and unbind cancels a pending flush', async () => {
+    const leafer = await createReadyLeafer()
+    const position = atom<IPointData>({ x: 0, y: 0 })
+    const onSync = vi.fn()
+    const root = createRoot(leafer as unknown as IUI)
+    root.render(
+      <group
+        ref={bindEnginePosition(position, { coalesce: true, bindPosition: true, onSync })}
+      />,
+    )
+    const group = contentChildren(leafer as unknown as IUI)[0] as IGroup
+
+    // 程序化写 atom：桥 effect 回写引擎 → 触发轴事件 → 微任务读回的值与
+    // atom 相同，被 shallowEqual 吸收，不产生第二次写穿
+    position({ x: 5, y: 6 })
+    expect(group.x).toBe(5)
+    await Promise.resolve()
+    expect(onSync).not.toHaveBeenCalled()
+    expect(position.raw).toEqual({ x: 5, y: 6 })
+
+    // 引擎移动后立刻卸载：排队中的微任务写穿被取消，atom 保留拆桥前的值
+    group.x = 99
+    root.destroy()
+    await Promise.resolve()
+    expect(onSync).not.toHaveBeenCalled()
+    expect(position.raw).toEqual({ x: 5, y: 6 })
+    leafer.destroy()
+  })
+
   it('onSync provides the write-through hook for spatial index maintenance', async () => {
     const leafer = await createReadyLeafer()
     const position = atom<IPointData>({ x: 0, y: 0 })
