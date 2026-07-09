@@ -46,6 +46,8 @@ export class RxLeaferState<T, U> extends ManualCleanup {
   destroy(): void {
     super.destroy()
     this.unlisten(this.target)
+    // 释放对 leafer 实例的引用，销毁后的实例不应 pin 住整个场景图
+    this.target = null
   }
 }
 

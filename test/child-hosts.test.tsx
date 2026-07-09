@@ -65,14 +65,15 @@ describe('AtomHost', () => {
     expect((text as IText).text).toBe('42')
   })
 
-  it('stringifies null / undefined / objects', () => {
+  it('renders null / undefined as empty text, stringifies objects', () => {
     const value = atom<unknown>(null)
     const { container } = mount(<group>{value}</group>)
     const [group] = contentChildren(container)
     const [text] = contentChildren(group!)
-    expect((text as IText).text).toBe('null')
+    // null/undefined 是「暂无数据」的自然写法，与 FunctionHost 语义一致渲染为空
+    expect((text as IText).text).toBe('')
     value(undefined)
-    expect((text as IText).text).toBe('undefined')
+    expect((text as IText).text).toBe('')
     value({ toString: () => 'obj' })
     expect((text as IText).text).toBe('obj')
   })

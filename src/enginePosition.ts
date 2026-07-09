@@ -116,6 +116,15 @@ export function bindEnginePosition(
         ui.y = pos.y
       })
       positionEffect.run()
+    } else {
+      // CAUTION 挂载即做一次 atom → 引擎的初始同步：model atom 是唯一持久事实源，
+      //  JSX 未绑定 x/y 且未开 bindPosition 时，引擎节点也应从 model 拿到初始位置，
+      //  否则要等到首次 property.change 才对齐。已有 x/y 绑定时这里写入的是同值，
+      //  被 leafer 属性 setter 的等值检查吸收为 no-op。
+      //  在注册 onChange 之前写入，初始同步不会经过引擎 → atom 的回写通道。
+      const initial = position.raw
+      ui.x = initial.x
+      ui.y = initial.y
     }
 
     ui.on(PropertyEvent.CHANGE, onChange)

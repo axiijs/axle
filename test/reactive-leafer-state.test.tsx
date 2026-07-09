@@ -51,12 +51,14 @@ describe('RxLeaferState base', () => {
     expect(probe.value()).toBe(2)
   })
 
-  it('destroy unlistens', () => {
+  it('destroy unlistens and releases the target reference', () => {
     const probe = new Probe()
     probe.ref({ id: 7 })
     probe.destroy()
     expect(probe.value()).toBe(null)
     expect(probe.unlistens).toEqual([7])
+    // 销毁后的实例不应继续 pin 住 leafer 目标（GC 友好）
+    expect(probe.target).toBe(null)
   })
 })
 

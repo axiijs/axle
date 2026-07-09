@@ -6,8 +6,10 @@ import { BindingEffect } from './BindingEffect.js'
 import { createUI, destroyNode, insertBefore } from './leafer.js'
 
 export function stringValue(v: unknown): string {
-  if (v === undefined) return 'undefined'
-  if (v === null) return 'null'
+  // CAUTION null/undefined/boolean 渲染为空文本，与 FunctionHost 的文本语义一致：
+  //  atom(null) 是「暂无数据」的自然写法，boolean 是条件渲染的中间态，
+  //  都不应该把字面 "null"/"undefined"/"false" 渲染到画布上。
+  if (v === undefined || v === null || typeof v === 'boolean') return ''
   return String(v)
 }
 
@@ -37,7 +39,13 @@ export class AtomHost extends BindingEffect implements Host {
   }
   // BindingEffect 触发时的回调（原型方法，替代构造器闭包）
   update(): void {
-    this.textUI!.text = stringValue(this.source())
+    // CAUTION 文本更新抛错（如用户对象的 toString 抛错）：外部通过 root.on('error')
+    //  注册了处理器时报告错误并跳过本次更新，否则保持向上抛出。
+    try {
+      this.textUI!.text = stringValue(this.source())
+    } catch (e) {
+      if (!this.pathContext.root.dispatch('error', e)) throw e
+    }
   }
   render(): void {
     const textUI = (this.textUI = createUI('Text') as IText)

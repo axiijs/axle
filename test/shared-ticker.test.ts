@@ -56,6 +56,22 @@ describe('createSharedTicker (05 号文档 §7.1 单一全局 ticker)', () => {
     ticker.destroy()
   })
 
+  it('add after destroy is a no-op (no ghost subscribers)', () => {
+    const frames = manualFrames()
+    const ticker = createSharedTicker({ schedule: frames.schedule.bind(frames) })
+    ticker.destroy()
+
+    const ticks: number[] = []
+    const off = ticker.add((now) => ticks.push(now))
+    // destroy 后的订阅不入队：循环永远不会启动，回调也不会滞留在集合里
+    expect(ticker.size).toBe(0)
+    expect(frames.pending).toBe(0)
+    frames.frame()
+    expect(ticks).toEqual([])
+    // 返回的退订函数可安全调用
+    expect(() => off()).not.toThrow()
+  })
+
   it('caps the tick rate with the fps option (video ≤ 30fps 隔帧绘制)', () => {
     const frames = manualFrames()
     const ticker = createSharedTicker({ fps: 30, schedule: frames.schedule.bind(frames) })

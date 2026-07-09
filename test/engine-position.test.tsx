@@ -182,9 +182,7 @@ describe('bindEnginePosition (05 号文档 §1 事实源反转)', () => {
     const onSync = vi.fn()
     const root = createRoot(leafer as unknown as IUI)
     root.render(
-      <group
-        ref={bindEnginePosition(position, { coalesce: true, bindPosition: true, onSync })}
-      />,
+      <group ref={bindEnginePosition(position, { coalesce: true, bindPosition: true, onSync })} />,
     )
     const group = contentChildren(leafer as unknown as IUI)[0] as IGroup
 
@@ -228,6 +226,31 @@ describe('bindEnginePosition (05 号文档 §1 事实源反转)', () => {
       { x: 20, y: 0 },
       { x: 20, y: 30 },
     ])
+
+    root.destroy()
+    leafer.destroy()
+  })
+
+  it('mount syncs the model atom into the engine even without x/y bindings', async () => {
+    const leafer = await createReadyLeafer()
+    const position = atom<IPointData>({ x: 100, y: 200 })
+    const onSync = vi.fn()
+    const root = createRoot(leafer as unknown as IUI)
+    // model atom 是唯一持久事实源：JSX 未绑定 x/y 且未开 bindPosition 时，
+    // 挂载也应把 model 位置同步进引擎，而不是等首次拖拽才对齐
+    root.render(<group ref={bindEnginePosition(position, { onSync })} />)
+    const group = contentChildren(leafer as unknown as IUI)[0] as IGroup
+
+    expect(group.x).toBe(100)
+    expect(group.y).toBe(200)
+    // 初始同步是 atom → 引擎方向，不应触发引擎 → atom 的回写通道
+    expect(onSync).not.toHaveBeenCalled()
+    expect(position.raw).toEqual({ x: 100, y: 200 })
+
+    // 桥的双向接线不受影响：引擎侧移动照常流入 atom
+    group.x = 150
+    expect(position.raw).toEqual({ x: 150, y: 200 })
+    expect(onSync).toHaveBeenCalledWith({ x: 150, y: 200 })
 
     root.destroy()
     leafer.destroy()
