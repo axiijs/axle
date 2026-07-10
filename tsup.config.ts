@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'tsup'
 
-const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+const { version } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as {
   version: string
 }
 
@@ -18,5 +20,5 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   target: 'es2022',
-  external: ['data0', 'leafer-editor', 'leafer-ui'],
+  external: ['data0', 'leafer-ui'],
 })

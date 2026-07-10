@@ -4,6 +4,14 @@
   "description": "Reactive JSX runtime foundation for data-driven LeaferJS canvas editors.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/axiijs/axle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/axiijs/axle/issues"
+  },
+  "homepage": "https://github.com/axiijs/axle#readme",
   "private": false,
   "sideEffects": false,
   "files": [
@@ -35,6 +43,7 @@
     "smoke:stress": "node scripts/stress-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -42,15 +51,14 @@
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "peerDependencies": {
-    "data0": "^2.0.0",
-    "leafer-editor": "^2.1.10",
+    "data0": "~2.1.0",
     "leafer-ui": "^2.1.10"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@vitest/coverage-v8": "^4.1.9",
-    "data0": "^2.1.0",
+    "data0": "~2.1.0",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "jsdom": "^29.1.1",
@@ -67,5 +75,8 @@
   },
   "engines": {
     "node": ">=20.19"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   }
 }

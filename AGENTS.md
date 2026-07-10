@@ -18,7 +18,8 @@ npx vitest run         # 仅测试（jsdom 环境，不是真实浏览器）
 npx vitest run --coverage
 npm run playground     # vite 启动 playground（直接引用 src/，改代码即时生效）
 npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199 端口 + 系统 Chrome
-                       #（npm run playground -- --port 5199，Chrome 在 /usr/local/bin/google-chrome）
+                       #（npm run playground -- --port 5199；自动探测常见路径，
+                       #  非标准安装通过 CHROME_PATH=/path/to/chrome 指定）
 ```
 
 ## 基本原则（硬性）
