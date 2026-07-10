@@ -529,6 +529,93 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('incremental churn keeps task queue arrays bounded (长纯增量会话的压实)', () => {
+    const interacting = atom(false)
+    const { index, addCard, scheduler, windowed, mountedIds } = setup({
+      interacting: () => interacting(),
+    })
+    addCard(1, 10, 10)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+
+    interacting(true)
+    addCard(2, 900, 900) // 窗口外
+    scheduler.settle()
+
+    // 手势中一个未挂载条目反复进出窗口（长拖拽的典型形态）：挂载被冻结，
+    // 每轮进出都是「push 挂载任务 + 撤销」——撤销只删集合、数组条目滞留
+    for (let i = 0; i < 500; i++) {
+      index.set(2, { x: 20, y: 20, width: 10, height: 10 })
+      scheduler.frame()
+      index.set(2, { x: 900, y: 900, width: 10, height: 10 })
+      scheduler.frame()
+    }
+    const internals = windowed as unknown as { pendingMounts: unknown[]; mountCursor: number }
+    // 无压实时数组会累积 ~500 条废任务；压实上界是「有效数 ×2 + 64」量级
+    expect(internals.pendingMounts.length - internals.mountCursor).toBeLessThan(150)
+
+    // 压实不破坏语义：最后一轮停在窗口内，任务仍在队列里
+    index.set(2, { x: 20, y: 20, width: 10, height: 10 })
+    scheduler.frame()
+    expect(windowed.pendingCount).toBe(1)
+    expect(mountedIds()).toEqual([1]) // 冻结中仍未挂载
+
+    interacting(false)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 2])
+    expect(windowed.stats.mounts).toBe(2) // 500 轮进出没有产生任何多余挂载
+    windowed.destroy()
+  })
+
+  it('incremental churn compacts replace/unmount queues too (替换积压下的拖拽振荡)', () => {
+    const lod = atom('full')
+    const { index, addCard, scheduler, windowed } = setup({
+      lod: () => lod(),
+      maxOpsPerFrame: 1,
+    })
+    // 600 张卡全部在窗口内挂载（每帧 1 个操作）
+    const total = 600
+    for (let i = 0; i < total; i++) addCard(i, (i % 25) * 4, Math.floor(i / 25) * 4)
+    scheduler.settle(2000)
+    expect(windowed.rows.data.length).toBe(total)
+
+    // 降档 → 全量重算给每张卡排一个替换任务，预算 1 op/帧 → 长期积压。
+    // 替换优先级高于卸载：积压期间卸载任务一直轮不到执行。
+    lod('simple')
+    scheduler.frame()
+
+    // 卡 0 被反复拖出/拖回保留窗口（长拖拽形态）：出 → 撤销其替换、push 卸载；
+    // 回 → 撤销卸载、push 新替换。两条队列的数组都在纯增量会话里累积废条目
+    for (let i = 0; i < 250; i++) {
+      index.set(0, { x: 900, y: 900, width: 10, height: 10 })
+      scheduler.frame()
+      index.set(0, { x: 0, y: 0, width: 10, height: 10 })
+      scheduler.frame()
+    }
+    const internals = windowed as unknown as {
+      pendingReplaces: { id: number }[]
+      replaceCursor: number
+      pendingUnmounts: { id: number }[]
+      unmountCursor: number
+    }
+    // 无压实时：卸载队列累积 ~250 条废任务、替换队列在积压之上累积 ~250 条
+    expect(internals.pendingUnmounts.length - internals.unmountCursor).toBeLessThan(150)
+    // 替换队列压实保留全部有效积压（数百条），只清废条目
+    expect(internals.pendingReplaces.length - internals.replaceCursor).toBeLessThan(
+      (windowed as unknown as { queuedReplaceIds: Set<number> }).queuedReplaceIds.size + 100,
+    )
+    // 振荡期间卡 0 从未被真正卸载（替换积压占满预算，卸载任务全部在执行前撤销）
+    expect(windowed.stats.unmounts).toBe(0)
+
+    // 压实不破坏语义：排空积压后每张卡（含卡 0）恰好替换一次
+    scheduler.settle(2000)
+    expect(windowed.stats.replaces).toBe(total)
+    expect(windowed.stats.unmounts).toBe(0)
+    expect(windowed.rows.data.every((row) => row.lod === 'simple')).toBe(true)
+    expect(windowed.rows.data.length).toBe(total)
+    windowed.destroy()
+  })
+
   it('incremental judgement keeps pinned entries alive when they move (targetLod pin rules)', () => {
     const pins = atom<number[]>([])
     const { index, addCard, scheduler, windowed, mountedIds } = setup({ pins: () => pins() })

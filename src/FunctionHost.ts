@@ -51,11 +51,24 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     const cleanups = this.cleanups
     if (cleanups?.length) {
       this.cleanups = undefined
+      // CAUTION 清理回调必须在暂停依赖追踪的状态下运行：renderSource 经
+      //  ReactiveEffect.run 的追踪窗口调用本方法（data0 的 run 用 enableTracking
+      //  覆盖整个 callGetter），清理回调里的响应式读取会被误追踪为本区域的
+      //  依赖——之后任何无关写入都会整块重建该区域，且每次重建重新注册清理、
+      //  重新读取，泄漏自我延续。destroy 路径同样可能运行在外层 FunctionHost
+      //  的 teardown（即外层追踪窗口）里。成本是每批清理一对 pause/reset
+      //  （两次数组操作），且只在注册过清理回调的函数 child 上发生。
+      //
       // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：runCleanups
       // 运行在微任务重算 / destroy 链（可能在 data0 patch）里，抛出会中断
       // 兄弟清理与本次重算/销毁流程。
-      for (const cleanup of cleanups) {
-        runCleanupIsolated(this.pathContext.root, cleanup, 'function child cleanup')
+      Notifier.instance.pauseTracking()
+      try {
+        for (const cleanup of cleanups) {
+          runCleanupIsolated(this.pathContext.root, cleanup, 'function child cleanup')
+        }
+      } finally {
+        Notifier.instance.resetTracking()
       }
     }
   }
@@ -203,25 +216,36 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
    *  回滚不对称。这里隔离后本次重建照常进行；万一有残留节点落在
    *  (boundary, placeholder) 区间内，渲染失败时的区间回滚会顺带清掉。
    *  闭包只在结构切换路径（本身就是整块重建的重量级操作）上分配。
+   *
+   * CAUTION 整个 teardown 必须在暂停依赖追踪的状态下运行（doc/02 §3.2）：
+   *  本方法运行在 renderSource 的追踪窗口内（见 runCleanups 的 CAUTION），
+   *  旧子树销毁会执行组件 onCleanup / effect 与 layoutEffect 清理 / ref detach
+   *  等用户回调，其中的响应式读取若被追踪，任何无关写入都会整块重建本区域。
+   *  一对 pause/reset 只出现在结构切换路径上，文本原地更新的快速路径不经过。
    */
   private teardownPrevious(): void {
-    const textUI = this.textUI
-    if (textUI) {
-      this.textUI = null
-      runCleanupIsolated(
-        this.pathContext.root,
-        () => destroyNode(textUI),
-        'function child text teardown',
-      )
-    }
-    const inner = this.innerHost
-    if (inner) {
-      this.innerHost = null
-      runCleanupIsolated(
-        this.pathContext.root,
-        () => inner.destroy(),
-        'function child region teardown',
-      )
+    Notifier.instance.pauseTracking()
+    try {
+      const textUI = this.textUI
+      if (textUI) {
+        this.textUI = null
+        runCleanupIsolated(
+          this.pathContext.root,
+          () => destroyNode(textUI),
+          'function child text teardown',
+        )
+      }
+      const inner = this.innerHost
+      if (inner) {
+        this.innerHost = null
+        runCleanupIsolated(
+          this.pathContext.root,
+          () => inner.destroy(),
+          'function child region teardown',
+        )
+      }
+    } finally {
+      Notifier.instance.resetTracking()
     }
   }
   destroyInnerHost(parentHandle = false): void {

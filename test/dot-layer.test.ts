@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ILeaferCanvas, IRenderOptions } from 'leafer-ui'
-import { SpatialIndex, createDotLayer } from '@axiijs/axle'
+import { SpatialIndex, boundsIntersect, createDotLayer } from '@axiijs/axle'
 import type { IndexBounds } from '@axiijs/axle'
 
 type FillCall = { color: string; x: number; y: number; width: number; height: number }
@@ -230,6 +230,66 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
     }
     expect(coveredBy(flushed, { x: 0, y: 0, width: 150, height: 100 })).toBe(true)
     expect(coveredBy(flushed, { x: 3000, y: 3000, width: 150, height: 100 })).toBe(true)
+    layer.destroy()
+  })
+
+  it('dirty rect merging cascades: a bridging change collapses touched rects into one (无重叠失效)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    let frameCallback: (() => void) | null = null
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      schedule: (callback) => {
+        frameCallback = callback
+        return () => {
+          frameCallback = null
+        }
+      },
+    })
+    const { regions } = mountFakeLeafer(layer)
+
+    // 两个不相交的脏区，第三个变更同时横跨两者（长距离拖拽新旧包围盒
+    // 各自吸附过一片脏区的形态）：一轮合并会留下互相重叠的脏区
+    index.set(1, { x: 0, y: 0, width: 100, height: 100 })
+    index.set(2, { x: 300, y: 0, width: 100, height: 100 })
+    index.set(3, { x: 90, y: 0, width: 220, height: 100 })
+    frameCallback!()
+
+    const flushed = regions()
+    // 级联合并后是单个并集：不允许对同一区域重复 forceRender
+    expect(flushed.length).toBe(1)
+    expect(coveredBy(flushed, { x: 0, y: 0, width: 400, height: 100 })).toBe(true)
+    layer.destroy()
+  })
+
+  it('flushed dirty rects are pairwise disjoint (级联合并的不变量)', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    let frameCallback: (() => void) | null = null
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      schedule: (callback) => {
+        frameCallback = callback
+        return () => {
+          frameCallback = null
+        }
+      },
+    })
+    const { regions } = mountFakeLeafer(layer)
+
+    // 交错插入：相邻条目彼此相交成链，间隔一片远处条目
+    for (let i = 0; i < 12; i++) {
+      index.set(i, { x: i * 60, y: 0, width: 100, height: 50 }) // 链式重叠
+      index.set(100 + i, { x: (i % 4) * 900, y: 2000 + Math.floor(i / 4) * 300, width: 80, height: 80 })
+    }
+    frameCallback!()
+
+    const flushed = regions()
+    for (let i = 0; i < flushed.length; i++) {
+      for (let j = i + 1; j < flushed.length; j++) {
+        expect(boundsIntersect(flushed[i]!, flushed[j]!)).toBe(false)
+      }
+    }
     layer.destroy()
   })
 

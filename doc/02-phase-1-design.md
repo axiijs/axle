@@ -171,6 +171,16 @@ interface Host {
 - 结构路径：销毁旧 innerHost，创建新占位符 + `createHost` 重建。重建过程中
   `Notifier.instance.pauseTracking()` + `effect.pauseCollectChild()`，内层的响应式
   读取不能泄漏为本 effect 的依赖。
+- **清理阶段同样不允许泄漏依赖**：data0 的 `ReactiveEffect.run` 用 `enableTracking`
+  覆盖整个 `callGetter`，`renderSource` 里除 source 求值之外的一切都运行在追踪
+  窗口内。重算前的 `runCleanups()`（函数 child 自己的 onCleanup）与
+  `teardownPrevious()`（旧子树销毁——组件 onCleanup / effect 与 layoutEffect 清理 /
+  ref detach 等用户回调）必须在 `pauseTracking` 下运行，否则清理回调里的响应式
+  读取会被误追踪为本区域的依赖：之后任何无关写入都会整块重建该区域，且每次
+  重建重新注册清理、重新读取，泄漏自我延续（`onCleanup(() => selected.has(id) && ...)`
+  这类写法会让每次选中集变化都重建区域）。**本 effect 的合法依赖只有 source
+  求值期间的读取**。`runCleanups` 的 pause 放在方法内部而不是调用点：destroy
+  路径同样可能运行在外层 FunctionHost 的 teardown（即外层追踪窗口）里。
 - **结构重建是事务化的**（与 RxListHost 的行创建同一套论证）：内层渲染抛错时回滚
   `(boundary, placeholder)` 区间内已插入的节点、区域降级为空，错误交给 root error
   钩子（未注册钩子时：初次渲染在用户 render 调用栈上保持向上抛；更新运行在微任务里，
@@ -230,7 +240,11 @@ EXPLICIT_KEY_CHANGE)`），用普通数组维护行 Host：
 - **顺序级**：分支内没有任何 zIndex 参与排序时，行首节点的物理顺序必须与簿记顺序
   一致、占位符在所有行之后。zIndex 物理重排例外（§3.1 附注）只豁免「场景图物理
   顺序」，簿记与数据的对应关系仍必须成立；不校验这一层，splice 锚点错位一类的
-  顺序失步只会以视觉错乱出现、无法定位。带 zIndex 的分支跳过顺序级校验。
+  顺序失步只会以视觉错乱出现、无法定位。带 zIndex 的分支跳过顺序级校验；
+- **zIndex × reorder 契约违例**：绑定 zIndex 的列表收到 reorder patch（doc/05
+  §2.3 明令禁止的组合）时报告契约违例。误用不破坏集合级不变量（搬移按引用、
+  锚点实时取下标），只会以视觉叠放错乱出现，所以**报告而不中断**——簿记调整
+  照常跟随数据执行。
 
 失败走 error 钩子并 `rebuildAllRows` 自愈。生产默认关闭，正常路径只多一次布尔检查。
 
@@ -296,6 +310,16 @@ root.destroy()
 - `render` 不可重入（再次 render 前必须 destroy），返回根 Host。
 - root 自带一个事件总线：`on(event, cb, { once? })` / `dispatch(event, arg?)`。
   `render` 完成后 dispatch `attach`；`destroy` 前 dispatch `detach`。
+- **非 error 事件的监听器彼此隔离**（与 `flushAttachQueue` 的连坐语义对齐）：
+  attach 派发的是同批组件的 layoutEffect / ref（无钩子降级模式会向上抛），
+  第一个抛错的监听器不允许吞掉同批兄弟的执行——once 监听器已注销、attach
+  不会再派发，被连坐的组件将永远收不到 layoutEffect / ref。全部执行完后把
+  **首个**错误继续抛给调用方（attach 在用户 render 调用栈上，无钩子向上抛的
+  契约不变），后续错误 `console.error` 保持可观测。
+- **`destroy` 里的 detach 派发运行在清理路径上**（清理回调绝不向上抛的硬契约，
+  见 3.4）：detach 监听器抛错交给 error 钩子（此刻仍注册着）/ `console.error`，
+  绝不中断销毁流程——半销毁的 root（host 树还在、监听器已跑过 detach）没有
+  任何恢复手段。
 - **`error` 钩子自身抛错必须就地隔离**：`dispatch('error')` 经常在 data0 的
   computed patch / trigger session 里被调用，钩子的异常冒出去会击穿
   `runSimplePatch`（data0 无 try/finally）把 computed 永久卡死——此后每次对该

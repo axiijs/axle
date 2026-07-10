@@ -276,6 +276,12 @@ export class RxListHost implements Host {
     for (const deleted of deletedHosts) this.destroyRowHost(deleted)
   }
   handleReorder(pairs: [number, number][], reorderInfo?: ReorderInfo): void {
+    // 开发期契约自检（doc/05 §2.3）：绑定 zIndex 的列表禁止 reorder patch——
+    // LIS 搬移假设分支物理顺序与簿记一致，zIndex 物理重排破坏该前提。误用
+    // 不会破坏集合级不变量（搬移按引用、锚点实时取下标），只会以视觉叠放
+    // 错乱出现、无从定位，所以这里报告而不中断：簿记调整必须跟随数据照常
+    // 执行。生产路径只多一次布尔检查。
+    if (listDiagnosticsEnabled) this.reportZIndexReorderViolation()
     const hosts = this.hosts!
     // 1. 先把 hosts 数组调整到新顺序（语义同 data0 RxList.reorder：data[to] = old[from]）
     let minChanged = Infinity
@@ -375,6 +381,25 @@ export class RxListHost implements Host {
     const anchor = this.findAnchor(index + 1)
     hosts[index] = this.createRowHost(data[index], anchor)
   }
+  /** 开发期自检：分支内有节点参与 zIndex 排序时，reorder patch 是契约外用法 */
+  private reportZIndexReorderViolation(): void {
+    const siblings = this.placeholder.parent?.children
+    /* v8 ignore next -- 防御分支：占位符被契约外摘出场景图时跳过自检，随后的 assertListInvariants 会暴露失步 */
+    if (!siblings) return
+    for (const node of siblings) {
+      if ((node as { zIndex?: number }).zIndex) {
+        const error = new Error(
+          '[axle] reorder patch on a zIndex-bound list is forbidden (doc/05 §2.3): ' +
+            'the LIS move path assumes the physical child order matches the bookkeeping, ' +
+            'which zIndex physical sorting breaks. Stacking must come from explicit zIndex ' +
+            'and the list should only receive splice patches.',
+        )
+        if (!this.pathContext.root.dispatch('error', error)) console.error(error)
+        return
+      }
+    }
+  }
+
   /**
    * 开发期不变量自检（setListDiagnostics 开启时每个 patch 批次后调用）：
    * - 簿记与数据等长且无 hole；
