@@ -117,14 +117,34 @@ describe('insertBefore', () => {
     // 倒数第 2 / 第 3（尾段探测覆盖的另两种挂载形态）
     insertBefore(named('t2'), parent.children[parent.children.length - 2] as IUI) // before 'last'
     insertBefore(named('t3'), parent.children[parent.children.length - 3] as IUI) // before 't2'
-    expect(childNames(parent)).toEqual(
-      ['head', 'a0', 'a1', 'a2', 'mid', 'a3', 'a4', 't3', 't2', 'last', 'a5'],
-    )
+    expect(childNames(parent)).toEqual([
+      'head',
+      'a0',
+      'a1',
+      'a2',
+      'mid',
+      'a3',
+      'a4',
+      't3',
+      't2',
+      'last',
+      'a5',
+    ])
     // 同父前向搬移的下标修正与尾段探测叠加：把头部节点搬到最后一个锚点之前
     insertBefore(parent.children[0] as IUI, anchors[5]!)
-    expect(childNames(parent)).toEqual(
-      ['a0', 'a1', 'a2', 'mid', 'a3', 'a4', 't3', 't2', 'last', 'head', 'a5'],
-    )
+    expect(childNames(parent)).toEqual([
+      'a0',
+      'a1',
+      'a2',
+      'mid',
+      'a3',
+      'a4',
+      't3',
+      't2',
+      'last',
+      'head',
+      'a5',
+    ])
   })
 })
 
