@@ -139,6 +139,51 @@ describe('SpatialIndex', () => {
     expect(index.search({ x: -1, y: -1, width: 20, height: 20 })).toEqual(['a'])
   })
 
+  it('set 拒绝有限但巨大的尺寸（cell 覆盖数超出设计包络会让写入循环失控）', () => {
+    const index = new SpatialIndex<string>({ cellSize: 512 })
+    // width 1e8 → 约 1.9e5 × 1.9e5 个 cell：仅 isFinite 防不住，不断言就是挂死
+    expect(() => index.set('a', { x: 0, y: 0, width: 1e8, height: 1e8 })).toThrow(/cells/)
+    // 细长条目（连线包围盒的合法形态）：一维极长 × 一维极短，cell 数少，放行
+    index.set('edge', { x: 0, y: 0, width: 2e7, height: 10 })
+    expect(index.search({ x: 1e7, y: 0, width: 100, height: 100 })).toEqual(['edge'])
+    // 包络内的巨型方形条目（256×256 cell 以内）照常工作
+    index.set('big', { x: 0, y: 5000, width: 130000, height: 130000 })
+    expect(index.search({ x: 100000, y: 100000, width: 10, height: 10 })).toEqual(['big'])
+  })
+
+  it('set 拒绝超出 cellKey ±2^25 编码域的坐标（越界后逆映射精度丢失是静默错误）', () => {
+    const index = new SpatialIndex<string>({ cellSize: 512 })
+    const farOut = 2 ** 26 * 512 // cx = 2^26，越界
+    expect(() => index.set('a', { x: farOut, y: 0, width: 10, height: 10 })).toThrow(/2\^25/)
+    expect(() => index.set('a', { x: -farOut, y: 0, width: 10, height: 10 })).toThrow(/2\^25/)
+    expect(() => index.set('a', { x: 0, y: farOut, width: 10, height: 10 })).toThrow(/2\^25/)
+    // 编码域内的极远坐标照常工作（约 ±1.7e10 px）
+    const nearEdge = (2 ** 25 - 2) * 512
+    index.set('far', { x: nearEdge, y: -nearEdge, width: 10, height: 10 })
+    expect(
+      index.search({ x: nearEdge - 5, y: -nearEdge - 5, width: 100, height: 100 }),
+    ).toEqual(['far'])
+  })
+
+  it('包络断言失败不留半写入状态（更新路径旧条目原样保留）', () => {
+    const index = new SpatialIndex<string>({ cellSize: 512 })
+    const notified: unknown[] = []
+    index.subscribe((change) => notified.push(change))
+    index.set('a', { x: 0, y: 0, width: 10, height: 10 })
+    expect(notified.length).toBe(1)
+
+    // 对既有条目写入失控 bounds：断言先于一切簿记，旧条目不动、不派发通知
+    expect(() => index.set('a', { x: 0, y: 0, width: 1e8, height: 1e8 })).toThrow(/cells/)
+    expect(notified.length).toBe(1)
+    expect(index.get('a')).toEqual({ x: 0, y: 0, width: 10, height: 10 })
+    expect(index.search({ x: -5, y: -5, width: 20, height: 20 })).toEqual(['a'])
+
+    // 新 id 的失控写入同样不留痕迹
+    expect(() => index.set('b', { x: 1e12, y: 0, width: 10, height: 10 })).toThrow(/2\^25/)
+    expect(index.has('b')).toBe(false)
+    expect(index.size).toBe(1)
+  })
+
   it('查询矩形远大于内容范围（含 Infinity）时不退化为按矩形面积扫描', () => {
     const index = new SpatialIndex<string>({ cellSize: 100 })
     index.set('a', { x: 10, y: 10, width: 20, height: 20 })

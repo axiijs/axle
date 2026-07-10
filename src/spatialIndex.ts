@@ -3,7 +3,8 @@
  *
  * - **bounds 是 model 的一等公民**：索引只吃调用方写入的页面坐标包围盒，
  *   绝不依赖引擎 layout 的测量结果（未挂载的条目永远不会被 leafer 测量）。
- *   bounds 四个字段必须是有限数（`set` 入口断言，见方法注释）。
+ *   bounds 四个字段必须是有限数，且落在均匀网格的设计包络内（单条目
+ *   ≤ 2^16 个 cell、cell 坐标 ≤ ±2^25——`set` 入口断言，见方法注释）。
  * - **write-through 维护**：索引本身不做任何响应式订阅。位置/尺寸写入由
  *   调用方在数据层操作里同步调用 `set` / `delete`；索引在写入时同步派发
  *   变更通知（普通回调），消费方（窗口化列表 / DotLayer）自行做 rAF 合并。
@@ -89,12 +90,11 @@ export class SpatialIndex<Id> {
 
   /** 插入或更新一个条目（write-through 的唯一写入口） */
   set(id: Id, bounds: IndexBounds): void {
-    // CAUTION 非有限 bounds 必须在写入口拒绝：Infinity / 超大值会让 addToCells
-    //  的 cell 双层循环失控（实测直接 OOM 挂死页面）；NaN 会让条目落进 NaN
-    //  cell——对所有查询永久不可见（卡片从底衬与窗口化中静默消失，且事故点
-    //  与症状点相隔甚远、无从定位）。write-through 是数据层的唯一写入口，
+    // CAUTION 非有限 bounds 必须在写入口拒绝：NaN 会让条目落进 NaN cell——
+    //  对所有查询永久不可见（卡片从底衬与窗口化中静默消失，且事故点与症状点
+    //  相隔甚远、无从定位）。write-through 是数据层的唯一写入口，
     //  在这里断言把事故暴露在写入点。成本是每次 set 四次有限性检查，
-    //  不在每帧查询热路径上。
+    //  不在每帧查询热路径上。超大值由下面的设计包络断言拒绝。
     assert(
       Number.isFinite(bounds.x) &&
         Number.isFinite(bounds.y) &&
@@ -112,6 +112,31 @@ export class SpatialIndex<Id> {
     const minCy = Math.floor(next.y / this.cellSize)
     const maxCx = Math.floor((next.x + next.width) / this.cellSize)
     const maxCy = Math.floor((next.y + next.height) / this.cellSize)
+
+    // CAUTION 设计包络断言（doc/05 §2.1），与有限性检查同属写入口防线，
+    //  必须在任何簿记写入之前执行（断言失败不留半写入状态）：
+    //  - cell 覆盖数上限：有限但巨大的尺寸（viewRect 除以异常 scale、布局
+    //    计算出错的典型产物）会让 addToCells 的双层循环失控——width 1e6 时
+    //    一次 set 就是数百万次 Map 操作（实测秒级），1e8 直接挂死。仅
+    //    Number.isFinite 防不住这类值。上限取 2^16 个 cell：默认 cellSize 下
+    //    允许 131072px 见方的巨型条目或数千万 px 长的细长连线条目，均匀网格
+    //    对更大的条目本身已经退化，失败要暴露在写入点而不是挂死在这里；
+    //  - cell 坐标编码域：cellKey 的折叠编码要求 cell 坐标在 ±2^25 内
+    //    （默认 cellSize 下约 ±1.7e10 px）。越界后 key 运算超出 2^53，
+    //    keyToCx/keyToCy 逆映射在浮点精度损失下出错——稀疏回退路径漏报、
+    //    密度聚合画错格子，全部是静默错误。
+    //  成本是每次 set 一次乘法 + 六次比较，不在每帧查询热路径上。
+    assert(
+      (maxCx - minCx + 1) * (maxCy - minCy + 1) <= MAX_CELLS_PER_ENTRY,
+      `SpatialIndex entry covers ${(maxCx - minCx + 1) * (maxCy - minCy + 1)} cells (max ${MAX_CELLS_PER_ENTRY}), got { x: ${bounds.x}, y: ${bounds.y}, width: ${bounds.width}, height: ${bounds.height} } with cellSize ${this.cellSize} — this is almost certainly a runaway value`,
+    )
+    assert(
+      minCx >= MIN_CELL_COORD &&
+        minCy >= MIN_CELL_COORD &&
+        maxCx <= MAX_CELL_COORD &&
+        maxCy <= MAX_CELL_COORD,
+      `SpatialIndex entry cell coordinates out of the ±2^25 encoding domain (|coordinate| ≲ ${MAX_CELL_COORD * this.cellSize}px with cellSize ${this.cellSize}), got { x: ${bounds.x}, y: ${bounds.y}, width: ${bounds.width}, height: ${bounds.height} }`,
+    )
 
     const existing = this.entries.get(id)
     if (existing) {
@@ -320,7 +345,18 @@ export class SpatialIndex<Id> {
   }
 }
 
-/** cell 坐标折叠为单个 number key（±2^25 个 cell，足够覆盖任何画布） */
+/**
+ * 单条目允许覆盖的 cell 数上限（set 入口断言，见方法内 CAUTION）。
+ * 2^16：默认 cellSize 512 下是 131072px 见方（256×256 cell）的巨型条目，
+ * 或任意一维数千万 px 的细长条目（连线包围盒的合法形态）。
+ */
+const MAX_CELLS_PER_ENTRY = 0x10000
+
+/** cellKey 编码域：cell 坐标必须在 ±(2^25 − 1) 内，逆映射才精确（见下） */
+const MAX_CELL_COORD = 0x2000000 - 1
+const MIN_CELL_COORD = -0x2000000
+
+/** cell 坐标折叠为单个 number key（±2^25 个 cell，set 入口断言保证不越界） */
 function cellKey(cx: number, cy: number): number {
   return (cx + 0x2000000) * 0x4000000 + (cy + 0x2000000)
 }
