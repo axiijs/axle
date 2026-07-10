@@ -44,8 +44,8 @@ type AxleNode = {
    - **先簿记后运行**（与 childHosts「先 push 再 render」同一范式）：effect 必须先进
      `attrEffects` 再首次 `run()`。初始求值抛错时依赖已被追踪，若 effect 不在簿记里，
      渲染事务的回滚（destroy）够不到它——泄漏成继续响应依赖的活效应，之后对该依赖的
-     每次写入都会把异常抛进 data0 的 trigger session（击穿 `runSimplePatch`，整个
-     依赖图区域瘫痪）。
+     每次写入都会重跑抛错的 getter、把异常同步抛回业务写入点（data0 >= 2.2 同步执行；
+     2.1 及以前是 unhandled rejection 且会击穿无恢复的 `runSimplePatch`）。
    - **「初次渲染」的判定依据是调用栈**（初始 `run()` 是否已返回），与「首次求值是否
      成功」解耦：error 钩子消费掉初始错误后，后续更新已运行在 trigger session 里，
      即使该绑定从未成功求值过，更新错误也必须降级为 `console.error` + 跳过
@@ -331,10 +331,11 @@ root.destroy()
   绝不中断销毁流程——半销毁的 root（host 树还在、监听器已跑过 detach）没有
   任何恢复手段。
 - **`error` 钩子自身抛错必须就地隔离**：`dispatch('error')` 经常在 data0 的
-  computed patch / trigger session 里被调用，钩子的异常冒出去会击穿
-  `runSimplePatch`（data0 无 try/finally）把 computed 永久卡死——此后每次对该
-  RxList 的写入都同步抛 data0 断言。钩子抛错时 `console.error` 报告并**仍视为
-  已消费**（返回 true，区域照常降级）：把原错误继续抛回去会造成同样的损毁。
+  computed patch / trigger session 里被调用。data0 >= 2.2 的 `runSimplePatch`
+  有 try/finally 恢复、不会再把 computed 永久卡死，但钩子异常冒出去会同步抛回
+  业务写入点、并跳过同批剩余 triggerInfo（列表区域状态不一致）。钩子抛错时
+  `console.error` 报告并**仍视为已消费**（返回 true，区域照常降级）：把原错误
+  继续抛回去违反「框架内部错误不转嫁业务写入点」的契约。
 - `destroy` 销毁整棵 Host 树（场景图上 axle 创建的节点全部移除），不销毁容器本身。
 
 ## 5. 非目标（Phase 1 明确不做）

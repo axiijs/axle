@@ -118,10 +118,11 @@ export class RxListHost implements Host {
     insertBefore(rowPlaceholder, anchor)
     const emptyRow = new EmptyHost(rowPlaceholder, this.rowContext!)
     // 4. 错误交给 root error 钩子。未注册钩子时用 console.error 报告，
-    //    CAUTION 不能向上抛：行创建运行在 data0 computed 的 getter/patch 里，
-    //    data0 的 fullRecompute/patchRecompute 是 async 函数，向上抛只会变成
-    //    unhandled rejection（应用侧无法捕获），而且 data0 的 callSimpleGetter/
-    //    runSimplePatch 没有 try/finally 恢复，抛错还会让全局依赖追踪栈失衡。
+    //    CAUTION 不能向上抛：行创建运行在 data0 computed 的 getter/patch 里。
+    //    data0 >= 2.2 同步 computed 全程同步执行且有 try/finally 恢复，向上抛
+    //    会同步抛回业务写入点（list.push 等）——单行渲染错误不该由业务写入点
+    //    承担（错误契约：区域降级、应用存活，doc/02 §3.2）；async 场景向上抛
+    //    仍是 unhandled rejection。两种形态都必须在这里降级消化。
     this.reportRowError(error)
     return emptyRow
   }
@@ -198,9 +199,10 @@ export class RxListHost implements Host {
         this.pauseCollectChild()
         try {
           for (const info of triggerInfos) {
-            // CAUTION patch 在 data0 的 computed 里执行，向上抛只会变成 unhandled
-            //  rejection（patchRecompute 是 async 函数），且 data0 的 runSimplePatch
-            //  没有 try/finally，抛错会让 computed 卡在中间状态。
+            // CAUTION patch 在 data0 的 computed 里执行。data0 >= 2.2 同步 patch
+            //  是同步执行的（有 try/finally 恢复），向上抛会同步抛回业务写入点；
+            //  按错误契约（doc/02 §3.2）结构性 patch 错误应就地降级 + 自愈重建，
+            //  不能把列表内部错误转嫁给业务写入点。
             //  行渲染错误不会走到这里（createRowHost 内部已降级消化），这里兜底的
             //  是 reorder/未知 patch 等结构性错误：交给 root error 钩子，
             //  未注册钩子时 console.error 报告。

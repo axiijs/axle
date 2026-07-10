@@ -127,11 +127,11 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
       if (event === 'error') {
         // CAUTION error 钩子自身抛错必须就地隔离：dispatch('error') 经常在
         //  data0 的 computed patch / trigger session 里被调用（行错误恢复、
-        //  patch 兜底），钩子的异常从这里冒出去会击穿 runSimplePatch
-        //  （data0 无 try/finally）把 computed 永久卡死——此后每次对该
-        //  RxList 的写入都同步抛 data0 断言，整个列表区域瘫痪。钩子抛错
-        //  仍视为「已消费」（返回 true）：把原错误继续抛回去会造成同样的
-        //  损毁，console.error 报告钩子自身的错误保持可观测。
+        //  patch 兜底）。data0 >= 2.2 的 runSimplePatch 有 try/finally 恢复、
+        //  不会再把 computed 永久卡死，但钩子异常冒出去会同步抛回业务写入点，
+        //  且该 patch 批次剩余的 triggerInfo 会被跳过（列表区域状态不一致）。
+        //  钩子抛错仍视为「已消费」（返回 true）：把原错误继续抛回去违反
+        //  错误契约（doc/02 §3.2），console.error 报告钩子自身的错误保持可观测。
         callbacks.forEach((callback) => {
           try {
             callback(arg)

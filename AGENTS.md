@@ -41,14 +41,15 @@ npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199
 
 - 注册了 `root.on('error')`：任何区域渲染错误交给钩子、该区域降级（空区域/空行/保留旧值），应用整体存活；
 - 未注册钩子：**初次渲染**（用户 render 调用栈上）保持向上抛；**后续更新**运行在微任务 /
-  data0 trigger session 里，向上抛只会变成 uncaught exception / unhandled rejection，
+  data0 trigger session 里（data0 >= 2.2 同步 patch 向上抛会同步抛回业务写入点，async
+  场景仍是 unhandled rejection——两种形态都不该由业务写入点承担框架内部错误），
   一律降级为 `console.error` + 跳过；
 - **生命周期回调也在契约内**：effect/layoutEffect/**ref attach** 抛错走钩子（兄弟回调
   照常执行、已渲染区域不回滚）；**清理回调**（onCleanup/effect 清理/**ref detach** 等）
   抛错绝不向上抛（`runCleanupIsolated`，单行清理错误不允许升级成整列表 rebuild）；
   列表**行销毁**整体隔离（`RxListHost.destroyRowHost`：销毁抛错报告 + 节点兜底清理，
   被 splice 摘出簿记的行绝不允许泄漏成孤儿）；**error 钩子自身抛错**由 dispatch 就地隔离
-  （冒出去会击穿 data0 的 runSimplePatch 把 computed 永久卡死）；
+  （冒出去会同步抛回业务写入点并跳过同批剩余 patch，见 render.ts 的 CAUTION）；
 - **渲染必须事务化**：失败时回滚已插入场景图的节点（`RxListHost.createRowHost`、
   `FunctionHost.renderSource` 的 `(boundary, placeholder)` 区间回滚是范式），绝不留孤儿节点；
   未消费的占位符也在事务内（render 中途抛错后非 parentHandle 销毁必须清掉）；
@@ -86,8 +87,9 @@ leafer 的 zIndex 会对 children 数组**原地 sort**。因此：`getNodes()` 
 
 ### 6. 对 data0 内部行为的依赖要有注释背书
 
-patch 运行在 async 的 `patchRecompute` 里（向上抛 = unhandled rejection）、`runSimplePatch`
-没有 try/finally、`detachFromCreationContext` 操作 `_children` 的 swap-pop 结构、
+同步 computed 的 getter/patch 同步执行、未消费的错误同步抛回业务写入点（data0 >= 2.2，
+runSimplePatch/callSimpleGetter 有 try/finally 恢复；2.1 及以前是 async + unhandled
+rejection 且无恢复）、`detachFromCreationContext` 操作 `_children` 的 swap-pop 结构、
 `pauseCollectChild` 必须在创建内层 effect 之前……这类依赖 data0 私有实现的代码点都已有
 CAUTION 注释，升级 data0 或改这些点时逐条核对；新增此类依赖必须同样写明依据。
 

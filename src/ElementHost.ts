@@ -193,8 +193,8 @@ export class ElementHost implements Host {
         // CAUTION 先簿记后运行（与 childHosts「先 push 再 render」同一范式）：
         //  初始求值抛错时依赖已经被追踪，effect 若不先进 attrEffects，事务
         //  回滚（destroy）就够不到它——泄漏成继续响应依赖的活效应，之后对
-        //  该依赖的每次写入都会重跑抛错的 getter、把异常抛进 data0 的
-        //  trigger session（击穿 runSimplePatch，见 render.ts 的 CAUTION）。
+        //  该依赖的每次写入都会重跑抛错的 getter、把异常同步抛回业务写入点
+        //  （data0 >= 2.2 同步执行，见 render.ts 的 CAUTION）。
         //  纯语句重排 + 一个 try/finally 栈帧，挂载热路径零新增分配。
         attrEffects.push(effect)
         try {
