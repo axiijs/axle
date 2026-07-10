@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { atom } from 'data0'
 import type { IUI } from 'leafer-ui'
-import type { RenderContext } from '@axiijs/axle'
+import type { Props, RenderContext } from '@axiijs/axle'
 import { mount, tick, contentTags } from './helpers.js'
 
 /**
@@ -105,7 +105,7 @@ describe('FunctionHost 清理阶段不追踪依赖 (doc/02 §3.2)', () => {
     const elementRef = (value: IUI | null) => {
       if (value === null) void unrelated()
     }
-    function Inner(_: object, { expose }: RenderContext) {
+    function Inner(_: Props, { expose }: RenderContext) {
       expose({ ok: true })
       return <rect ref={elementRef} />
     }
