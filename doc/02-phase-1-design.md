@@ -194,6 +194,9 @@ interface Host {
   render 调用栈上）。注意与上一条结构重建错误的区别：结构渲染抛错发生在旧内容
   已销毁之后，区域只能降级为空；函数体抛错发生在任何拆除之前，旧内容完好。
 - 函数收到 `{ onCleanup }` context，注册的清理函数在每次重算前与 destroy 时执行。
+  context 只在 `source.length > 0` 时分配（零参函数是绝大多数，不为用不到的
+  context 付对象 + 闭包）——**不要给 context 参数写默认值**：`(ctx = {}) => ...`
+  的 `length` 是 0，会静默拿到自己的默认值而不是真正的 `onCleanup`。
 
 ### 3.3 RxListHost
 

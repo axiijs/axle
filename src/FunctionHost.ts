@@ -76,6 +76,10 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     // 只有 source 声明了参数（含解构 ({ onCleanup })，length 为 1）才分配
     // context 对象 + 闭包。onCleanup 必须是独立闭包而不是方法引用，
     // 用户可能解构后脱离 this 调用。
+    // CAUTION 探测依据是 Function.length，带默认值的参数（`(ctx = {}) => ...`）
+    //  length 为 0，会静默拿到自己的默认值而不是真正的 context——运行时无法
+    //  区分「零参」与「全默认值参数」，这是 JS 的固有限制，契约写明「不要给
+    //  context 参数写默认值」（doc/02 §3.2）。
     if (this.source.length > 0) {
       // eslint-disable-next-line @typescript-eslint/no-this-alias -- onCleanup 闭包需要引用 host
       const host = this
