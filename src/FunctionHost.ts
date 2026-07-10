@@ -76,6 +76,10 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     // 只有 source 声明了参数（含解构 ({ onCleanup })，length 为 1）才分配
     // context 对象 + 闭包。onCleanup 必须是独立闭包而不是方法引用，
     // 用户可能解构后脱离 this 调用。
+    // CAUTION 探测依据是 Function.length，带默认值的参数（`(ctx = {}) => ...`）
+    //  length 为 0，会静默拿到自己的默认值而不是真正的 context——运行时无法
+    //  区分「零参」与「全默认值参数」，这是 JS 的固有限制，契约写明「不要给
+    //  context 参数写默认值」（doc/02 §3.2）。
     if (this.source.length > 0) {
       // eslint-disable-next-line @typescript-eslint/no-this-alias -- onCleanup 闭包需要引用 host
       const host = this
@@ -99,13 +103,19 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
     try {
       node = this.source(this.sourceContext!)
     } catch (e) {
-      // 若外部通过 root.on('error') 注册了处理器，则报告错误并把该区域渲染为空
-      //（effect 保持活跃，依赖恢复后该区域可以恢复渲染）。
-      if (!this.pathContext.root.dispatch('error', e)) {
-        // 未注册处理器时只有初次渲染（用户主动的 render 调用栈上）保持向上抛；
+      // 函数体自身抛错（doc/02 §3.2）：
+      // - **更新**：一律「保留旧内容 + 报告」（有钩子交给钩子、无钩子
+      //   console.error）——与属性绑定 / atom 文本的更新契约一致。错误钩子只是
+      //   接管上报渠道，不允许比无钩子降级丢掉更多内容（旧内容可能与数据暂时
+      //   不一致，但空区域一定更糟；effect 保持活跃，依赖恢复后重算覆盖）。
+      // - **初次渲染**（尚无旧内容可保留）：有钩子时报告并把区域渲染为空
+      //   （node 保持 null 落进文本快速路径），无钩子保持向上抛（此刻在用户的
+      //   render 调用栈上）。
+      if (this.pathContext.root.dispatch('error', e)) {
+        if (this.rendered) return
+      } else {
         // 后续更新运行在微任务里，向上抛只会变成 uncaught exception（应用侧
-        // 无法捕获），降级为 console.error + 跳过本次更新（保留旧内容），
-        // 与属性绑定 / atom 文本更新的错误契约一致。
+        // 无法捕获），降级为 console.error + 跳过本次更新。
         if (!this.rendered) throw e
         console.error('[axle] function child recompute failed, keeping previous content:', e)
         return

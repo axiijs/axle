@@ -279,12 +279,12 @@ describe('FunctionHost 结构重建抛错（事务化区域重建）', () => {
     expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([3])
   })
 
-  it('RxList 行内的函数区域更新抛错：只降级该区域，行与列表簿记不受影响', async () => {
+  it('RxList 行内的函数区域更新抛错：保留旧内容，行与列表簿记不受影响', async () => {
     const fail = atom(false)
-    const rowContent = () => {
+    const rowContent = vi.fn(() => {
       if (fail()) throw new Error('region boom')
       return <rect width={5} />
-    }
+    })
     const items = new RxList<unknown>([
       <group>
         {rowContent}
@@ -299,16 +299,19 @@ describe('FunctionHost 结构重建抛错（事务化区域重建）', () => {
     fail(true)
     await tick()
     expect(onError).toHaveBeenCalledTimes(1)
-    // 函数区域降级为空文本（函数体抛错 → 钩子 → 区域为空），行结构保留
-    expect(contentChildren(row).map((child) => child.tag)).toEqual(['Text', 'Text'])
+    // 函数体更新抛错 → 保留旧内容（错误钩子只接管上报渠道，不改变降级形态，
+    // doc/02 §3.2），行结构不变
+    expect(contentChildren(row).map((child) => child.tag)).toEqual(['Rect', 'Text'])
     expect(findListHost(root.host).hosts.length).toBe(1)
 
     // 列表的后续 patch 照常
     items.push('sibling row')
     expect(findListHost(root.host).hosts.length).toBe(2)
 
+    // 依赖恢复后区域重算（源函数再次执行），内容仍然正确
     fail(false)
     await tick()
+    expect(rowContent).toHaveBeenCalledTimes(3)
     expect(contentChildren(row).map((child) => child.tag)).toEqual(['Rect', 'Text'])
   })
 
@@ -325,6 +328,30 @@ describe('FunctionHost 结构重建抛错（事务化区域重建）', () => {
     expect(onError).toHaveBeenCalledTimes(1)
     const [group] = contentChildren(container)
     expect(contentChildren(group!)).toEqual([])
+  })
+
+  it('函数体更新抛错（有钩子）：错误进钩子 + 保留旧内容（与无钩子降级同形态）', async () => {
+    const fail = atom(false)
+    const { container, onError } = mountWithErrorHook(
+      <group>
+        {() => {
+          if (fail()) throw new Error('recompute boom')
+          return <rect width={7} />
+        }}
+      </group>,
+    )
+    const [group] = contentChildren(container)
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([7])
+
+    fail(true)
+    await tick()
+    expect(onError).toHaveBeenCalledTimes(1)
+    // 注册错误钩子不允许比无钩子降级丢掉更多内容：旧内容保留而不是区域清空
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([7])
+
+    fail(false)
+    await tick()
+    expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([7])
   })
 
   it('函数体更新抛错（无钩子）：console.error + 保留旧内容，依赖恢复后继续', async () => {

@@ -186,9 +186,17 @@ interface Host {
   钩子（未注册钩子时：初次渲染在用户 render 调用栈上保持向上抛；更新运行在微任务里，
   向上抛只会变成 uncaught exception，降级为 `console.error`）。effect 保持活跃，
   依赖恢复后区域可重建。
-- 函数体自身抛错：交给 error 钩子则区域渲染为空；未注册钩子时初次渲染向上抛、
-  更新 `console.error` + 跳过本次更新（保留旧内容，与属性绑定的契约一致）。
+- 函数体自身抛错：**更新**一律「保留旧内容 + 报告」——有钩子交给钩子、无钩子
+  `console.error` + 跳过本次更新，与属性绑定 / atom 文本的更新契约一致。错误钩子
+  只接管上报渠道，**不改变降级形态**（注册了监控反而把区域清空是更糟的降级；
+  旧内容可能与数据暂时不一致，依赖恢复后重算覆盖）。**初次渲染**（尚无旧内容
+  可保留）：有钩子时报告并把区域渲染为空，未注册钩子时向上抛（在用户的
+  render 调用栈上）。注意与上一条结构重建错误的区别：结构渲染抛错发生在旧内容
+  已销毁之后，区域只能降级为空；函数体抛错发生在任何拆除之前，旧内容完好。
 - 函数收到 `{ onCleanup }` context，注册的清理函数在每次重算前与 destroy 时执行。
+  context 只在 `source.length > 0` 时分配（零参函数是绝大多数，不为用不到的
+  context 付对象 + 闭包）——**不要给 context 参数写默认值**：`(ctx = {}) => ...`
+  的 `length` 是 0，会静默拿到自己的默认值而不是真正的 `onCleanup`。
 
 ### 3.3 RxListHost
 
@@ -293,6 +301,18 @@ type RenderContext = {
     `rebuildAllRows`，并中断兄弟清理造成泄漏；且销毁没有可回滚的「事务」。
     ref detach 抛错尤其危险：它在列表 splice 的行销毁路径上，中断销毁会让被摘出
     簿记的行成为永久孤儿（RxListHost 另有行级隔离 + 节点兜底清理，见 3.3）。
+  - **render 期间收集的对象（collect frame）的 destroy 也是清理路径**：frame 里的
+    computed / `RxLeaferState` 等的 destroy 会执行用户清理代码（computed 的
+    `onCleanup`、`RxLeaferState` 子类的 abort），必须**逐个隔离**——一个抛错的
+    destroy 若中断遍历，子树拆除与 attach 队列退订全部被跳过，绑定 effect 泄漏成
+    继续响应数据更新的「活孤儿」；`root.destroy()` 更会把异常抛回调用方，留下
+    没有任何恢复手段的半销毁树。
+- **组件销毁时序**：用户清理回调先于一切拆除执行——顺序固定为
+  **layoutEffect 清理 → `useEffect` 清理 / `onCleanup` → 组件 ref detach →
+  render 期收集对象（frame）销毁 → 子树拆除**（场景图节点移除、元素 ref detach）。
+  因此清理回调里**保证**还能读到 `ref.current`（`createRef` / 元素 ref）与组件内
+  创建的响应式对象——`onCleanup(() => observer.unobserve(ref.current!))` 这类
+  退订写法是契约内用法，不允许静默失效（axii 的同款契约，倒置顺序曾是移植回归）。
 
 ### 3.5 PathContext
 

@@ -141,7 +141,11 @@ export class ComponentHost implements Host {
         // 必须取消，否则连通后会对已销毁的组件执行 layoutEffect / ref。
         this.removeAttachListener = this.pathContext.root.deferAttached(this, this.runLayoutEffect)
       }
-    } else {
+    } else if (this.layoutEffects || this.refProp) {
+      // 与 attach 后的分支同一快路径判据：无 layoutEffect 且无组件 ref 的组件
+      // 完全跳过 attach 监听——初次渲染一棵大树时省 O(组件数) 个 once 闭包与
+      // 监听表条目，attach 派发也不再空跑它们（layoutEffects 在组件函数执行
+      // 期间注册，此刻已定型）。
       // 一定要保存退订函数：组件若在 root attach 之前被销毁，必须退订，
       // 否则 attach 时会对已销毁的组件执行 layoutEffect / ref。
       this.removeAttachListener = this.pathContext.root.on('attach', this.runLayoutEffect, {
@@ -186,23 +190,34 @@ export class ComponentHost implements Host {
   }
   destroy(parentHandle?: boolean): void {
     const root = this.pathContext.root
-    // CAUTION ref detach 是清理路径上的用户回调，绝不向上抛（同 runCleanupIsolated
-    //  的契约）：detach 抛错若从这里冒出去，frame 清理 / innerHost 销毁 / attach
-    //  队列退订全部中断——组件的绑定 effect 继续存活，泄漏成还在响应数据更新的
-    //  「活孤儿」。未 attach 过的 ref 不 detach（不应收到 null）。
-    if (this.refAttached) {
-      runCleanupIsolated(root, () => detachRef(this.refProp), 'component ref detach')
-    }
-    this.frame?.forEach((cleanup) => cleanup.destroy())
-    this.innerHost?.destroy(parentHandle)
-    // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：
-    // 兄弟清理与剩余销毁流程（attach 队列退订、占位符移除）必须走完。
+    // CAUTION 销毁顺序契约（doc/02 §3.4）：用户清理回调（layoutEffect 清理 →
+    //  useEffect 清理 / onCleanup）必须在 ref 置空、render 期 computed 销毁、
+    //  子树拆除**之前**执行——`onCleanup(() => ref.current!.off(...))` 是最自然
+    //  的清理写法，先拆再清时 ref.current 已是 null / 节点已 destroy，退订与
+    //  解绑会静默丢失或 TypeError（axii 的 ComponentHost.destroy 有同款 CAUTION，
+    //  axle 移植时曾把顺序倒置，是回归）。
+    //  所有清理回调错误绝不向上抛（runCleanupIsolated 的契约）：兄弟清理与
+    //  剩余销毁流程（frame 销毁、子树拆除、attach 队列退订、占位符移除）必须走完。
     this.layoutEffectDestroyHandles?.forEach((handle) =>
       runCleanupIsolated(root, handle, 'component layoutEffect cleanup'),
     )
     this.destroyCallbacks?.forEach((callback) =>
       runCleanupIsolated(root, callback, 'component cleanup callback'),
     )
+    // ref detach 同属清理路径；未 attach 过的 ref 不 detach（不应收到 null）
+    if (this.refAttached) {
+      runCleanupIsolated(root, () => detachRef(this.refProp), 'component ref detach')
+    }
+    // CAUTION frame 里是 render 期间收集的 computed / RxList / RxLeaferState 等，
+    //  它们的 destroy 会执行用户清理代码（computed 的 onCleanup、RxLeaferState
+    //  子类的 abort），必须逐个隔离：一个抛错的 destroy 若中断 forEach，
+    //  innerHost 销毁与 attach 队列退订全部被跳过——子树的绑定 effect 泄漏成
+    //  还在响应数据更新的「活孤儿」，root.destroy 更会把异常抛回调用方、留下
+    //  没有任何恢复手段的半销毁树（违反「清理回调绝不向上抛」的硬契约）。
+    this.frame?.forEach((cleanup) =>
+      runCleanupIsolated(root, () => cleanup.destroy(), 'component render-scope cleanup'),
+    )
+    this.innerHost?.destroy(parentHandle)
     this.removeAttachListener?.()
     if (!parentHandle && this.placeholder) destroyNode(this.placeholder)
   }
