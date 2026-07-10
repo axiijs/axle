@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RxList } from 'data0'
 import { Group } from 'leafer-ui'
 import type { IUI, IText } from 'leafer-ui'
@@ -100,6 +100,24 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     expect(rowTexts(container).sort()).toEqual(['1', '2', '3'])
     list.push(4)
     expect(errors.length).toBe(1) // splice 照常，无二次报告
+    root.destroy()
+  })
+
+  it('zIndex × reorder 违例在未注册 error 钩子时用 console.error 报告', () => {
+    setListDiagnostics(true)
+    const list = new RxList<number>([2, 1])
+    const { container, root } = mount(
+      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+    )
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      list.sortSelf((a, b) => a - b)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(String(consoleError.mock.calls[0]![0])).toMatch(/zIndex-bound list/)
+      expect(rowTexts(container).sort()).toEqual(['1', '2'])
+    } finally {
+      consoleError.mockRestore()
+    }
     root.destroy()
   })
 

@@ -384,6 +384,7 @@ export class RxListHost implements Host {
   /** 开发期自检：分支内有节点参与 zIndex 排序时，reorder patch 是契约外用法 */
   private reportZIndexReorderViolation(): void {
     const siblings = this.placeholder.parent?.children
+    /* v8 ignore next -- 防御分支：占位符被契约外摘出场景图时跳过自检，随后的 assertListInvariants 会暴露失步 */
     if (!siblings) return
     for (const node of siblings) {
       if ((node as { zIndex?: number }).zIndex) {
