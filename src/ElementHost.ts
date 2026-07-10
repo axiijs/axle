@@ -108,8 +108,10 @@ export class ElementHost implements Host {
     const isText = resolvedTag === 'Text'
 
     const staticData: Record<string, unknown> = {}
-    const reactiveProps: [string, unknown][] = []
-    const eventBindings: [string, (e: unknown) => void][] = []
+    // 挂载热路径（AGENTS §1）：绝大多数元素只有静态 props（虚拟化滚动中每帧
+    // 批量挂载），reactiveProps / eventBindings 惰性分配，每元素省两个空数组。
+    let reactiveProps: [string, unknown][] | undefined
+    let eventBindings: [string, (e: unknown) => void][] | undefined
 
     for (const key in props) {
       const value = props[key]
@@ -123,17 +125,17 @@ export class ElementHost implements Host {
         // 按未传处理。其余非函数值仍然报错（拼错/传错值不允许静默失效）。
         if (value === null || value === undefined) continue
         assert(typeof value === 'function', `event prop "${key}" must be a function`)
-        eventBindings.push([rawEventType(key), value as (e: unknown) => void])
+        ;(eventBindings ||= []).push([rawEventType(key), value as (e: unknown) => void])
         continue
       }
       if (isEventProp(key)) {
         if (value === null || value === undefined) continue
         assert(typeof value === 'function', `event prop "${key}" must be a function`)
-        eventBindings.push([eventTypeOfProp(key), value as (e: unknown) => void])
+        ;(eventBindings ||= []).push([eventTypeOfProp(key), value as (e: unknown) => void])
         continue
       }
       if (isReactiveValue(value) || (Array.isArray(value) && value.some(isReactiveValue))) {
-        reactiveProps.push([key, value])
+        ;(reactiveProps ||= []).push([key, value])
         continue
       }
       staticData[key] = value
@@ -144,7 +146,7 @@ export class ElementHost implements Host {
     // <text> 的 children 语义为「拼接为 text 属性」
     if (isText && children.length) {
       assert(
-        !('text' in staticData) && !reactiveProps.some(([key]) => key === 'text'),
+        !('text' in staticData) && !reactiveProps?.some(([key]) => key === 'text'),
         '<text> cannot have both a "text" prop and text children',
       )
       assert(
@@ -152,7 +154,7 @@ export class ElementHost implements Host {
         '<text> children must be primitives, atoms or functions',
       )
       if (children.some(isReactiveValue)) {
-        reactiveProps.push(['text', () => children.map(textValue).join('')])
+        ;(reactiveProps ||= []).push(['text', () => children.map(textValue).join('')])
       } else {
         staticData['text'] = children.map(textValue).join('')
       }
@@ -160,11 +162,13 @@ export class ElementHost implements Host {
 
     const ui = (this.ui = createUI(tag, staticData as IUIInputData))
 
-    for (const [type, listener] of eventBindings) {
-      ui.on(type, listener)
+    if (eventBindings) {
+      for (const [type, listener] of eventBindings) {
+        ui.on(type, listener)
+      }
     }
 
-    if (reactiveProps.length) {
+    if (reactiveProps) {
       const attrEffects: BindingEffect[] = (this.attrEffects = [])
       const target = ui as unknown as Record<string, unknown>
       for (const [key, value] of reactiveProps) {
