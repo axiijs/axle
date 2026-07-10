@@ -171,6 +171,16 @@ interface Host {
 - 结构路径：销毁旧 innerHost，创建新占位符 + `createHost` 重建。重建过程中
   `Notifier.instance.pauseTracking()` + `effect.pauseCollectChild()`，内层的响应式
   读取不能泄漏为本 effect 的依赖。
+- **清理阶段同样不允许泄漏依赖**：data0 的 `ReactiveEffect.run` 用 `enableTracking`
+  覆盖整个 `callGetter`，`renderSource` 里除 source 求值之外的一切都运行在追踪
+  窗口内。重算前的 `runCleanups()`（函数 child 自己的 onCleanup）与
+  `teardownPrevious()`（旧子树销毁——组件 onCleanup / effect 与 layoutEffect 清理 /
+  ref detach 等用户回调）必须在 `pauseTracking` 下运行，否则清理回调里的响应式
+  读取会被误追踪为本区域的依赖：之后任何无关写入都会整块重建该区域，且每次
+  重建重新注册清理、重新读取，泄漏自我延续（`onCleanup(() => selected.has(id) && ...)`
+  这类写法会让每次选中集变化都重建区域）。**本 effect 的合法依赖只有 source
+  求值期间的读取**。`runCleanups` 的 pause 放在方法内部而不是调用点：destroy
+  路径同样可能运行在外层 FunctionHost 的 teardown（即外层追踪窗口）里。
 - **结构重建是事务化的**（与 RxListHost 的行创建同一套论证）：内层渲染抛错时回滚
   `(boundary, placeholder)` 区间内已插入的节点、区域降级为空，错误交给 root error
   钩子（未注册钩子时：初次渲染在用户 render 调用栈上保持向上抛；更新运行在微任务里，
