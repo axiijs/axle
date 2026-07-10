@@ -673,7 +673,11 @@ describe('清理回调抛错（onCleanup / effect 清理 / layoutEffect 清理�
     const Row = makeRow(renders, cleanupLog)
     const items = new RxList<number>([1, 2, 3])
     const { container, root, onError } = mountWithErrorHook(
-      <group>{items.map((value) => <Row value={value} />)}</group>,
+      <group>
+        {items.map((value) => (
+          <Row value={value} />
+        ))}
+      </group>,
     )
     const [group] = contentChildren(container)
     const widths = () => contentChildren(group!).map((child) => (child as { width?: number }).width)
@@ -698,16 +702,22 @@ describe('清理回调抛错（onCleanup / effect 清理 / layoutEffect 清理�
       const cleanupLog: number[] = []
       const Row = makeRow(renders, cleanupLog)
       const items = new RxList<number>([1, 2, 3])
-      const { container } = mount(<group>{items.map((value) => <Row value={value} />)}</group>)
+      const { container } = mount(
+        <group>
+          {items.map((value) => (
+            <Row value={value} />
+          ))}
+        </group>,
+      )
       const [group] = contentChildren(container)
       const rendersBefore = renders.count
 
       expect(() => items.splice(1, 1)).not.toThrow()
       expect(consoleError).toHaveBeenCalledTimes(1)
       expect(renders.count).toBe(rendersBefore)
-      expect(
-        contentChildren(group!).map((child) => (child as { width?: number }).width),
-      ).toEqual([1, 3])
+      expect(contentChildren(group!).map((child) => (child as { width?: number }).width)).toEqual([
+        1, 3,
+      ])
     } finally {
       consoleError.mockRestore()
     }
