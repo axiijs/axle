@@ -17,7 +17,7 @@ npm install @axiijs/axle data0 leafer-ui
 
 `leafer-editor` 只用于仓库内的编辑器 playground，不是 Axle 运行时依赖；
 使用编辑器能力的应用按需自行安装。
-Axle 当前将 `data0` peer 限定在已验证的 `2.1.x`：运行时依赖其 effect/patch
+Axle 当前将 `data0` peer 限定在已验证的 `2.4.x`：运行时依赖其 effect/patch
 协议，升级 minor 版本前必须先通过 `test/data0-contract.test.ts`。
 
 ```tsx
