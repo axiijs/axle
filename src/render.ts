@@ -80,16 +80,24 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
       //  刚插入的占位符：此刻 root.host 尚未赋值，destroy() 够不到它，会泄漏成
       //  永久孤儿节点（违反「未消费的占位符也在事务内」，doc/02 §3.1）。
       //  render 每 root 只执行一次，try 栈帧不在任何热路径上。
+      let rootHost: Host
       try {
-        root.host = createHost(node, placeholder, pathContext)
+        rootHost = root.host = createHost(node, placeholder, pathContext)
       } catch (e) {
         destroyNode(placeholder)
         throw e
       }
-      root.host.render()
-      root.attached = true
-      root.dispatch('attach')
-      return root.host
+      rootHost.render()
+      // CAUTION error 钩子可能在渲染事务内同步重入 root.destroy()（doc/02 §4，
+      //  RxListHost 等区域会降级停手、不再触碰场景图）：此时 root.host 已被
+      //  destroy 清空，不能再置 attached / 派发 attach——否则 root 落入
+      //  「host 为空但 attached 为 true、监听器已清空」的半活状态。
+      //  正常路径只多一次指针比较。
+      if (root.host === rootHost) {
+        root.attached = true
+        root.dispatch('attach')
+      }
+      return rootHost
     },
     destroy() {
       // 先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。

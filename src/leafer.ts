@@ -51,15 +51,34 @@ export function isPlaceholder(node: IUI): boolean {
   return !!(node as unknown as Record<string, unknown>)[PLACEHOLDER_MARK]
 }
 
+/**
+ * 尾段锚点探测深度。列表挂载（含窗口化的批量 append）时锚点恒在尾部附近：
+ * 行占位符插到常驻 list 占位符（倒数第 1）之前；行内容插到行占位符
+ * （此刻倒数第 2）之前；组件行的元素内容插到组件内部占位符（此刻倒数第 3）
+ * 之前。3 覆盖这三种挂载形态；更深的嵌套（组件套组件）退回 indexOf。
+ */
+const TAIL_PROBE_DEPTH = 3
+
 /** 把 node 插入到 anchor 之前（anchor 必须已经在某个 branch 里），支持同父搬移 */
 export function insertBefore(node: IUI, anchor: IUI): void {
   const parent = anchor.parent
   assert(parent, 'cannot insert before a detached anchor node')
   const children = parent.children
-  // 追加快速路径：列表挂载（窗口化的主路径）的锚点是常驻的 list 占位符，
-  // 通常就是最后一个 child——先查尾部避免整条 children 的线性扫描。
-  const last = children.length - 1
-  let anchorIndex = children[last] === anchor ? last : children.indexOf(anchor)
+  // 尾段快速路径：挂载路径的锚点都在尾部附近（见 TAIL_PROBE_DEPTH 注释）。
+  // 只查最后一个不够——n 行初始挂载 / 大批量 append 时行内容的锚点在
+  // 倒数第 2/3 位，逐行退化成全长 indexOf 会让整批挂载变成 O(n²)
+  // （实测 32k 行初始挂载 450ms 中约四成耗在这里）。头部/中部插入
+  // （splice(0, 0, x) 一类）的锚点在前段，保持 indexOf 前向扫描的
+  // O(锚点下标) 不回退。正常路径至多多两次指针比较。
+  let anchorIndex = -1
+  const probeEnd = Math.max(children.length - TAIL_PROBE_DEPTH, 0)
+  for (let i = children.length - 1; i >= probeEnd; i--) {
+    if (children[i] === anchor) {
+      anchorIndex = i
+      break
+    }
+  }
+  if (anchorIndex < 0) anchorIndex = children.indexOf(anchor)
   // CAUTION Leafer 的 addBefore 先取 before 的下标再 remove child，
   //  同父前向搬移时下标会右偏一位，这里自己修正后用 add(child, index)。
   if (node.parent === parent) {

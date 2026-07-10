@@ -356,6 +356,14 @@ root.destroy()
   业务写入点、并跳过同批剩余 triggerInfo（列表区域状态不一致）。钩子抛错时
   `console.error` 报告并**仍视为已消费**（返回 true，区域照常降级）：把原错误
   继续抛回去违反「框架内部错误不转嫁业务写入点」的契约。
+- **`error` 钩子同步重入 `root.destroy()` 被容忍**（「出错整体卸载」的错误边界
+  写法）：错误上报发生在渲染事务内（初次渲染的建行循环 / data0 patch 还在栈上），
+  钩子销毁 root 后框架立即停手——`RxListHost` 以 `destroyed` 标志让剩余建行 /
+  剩余 patch 全部放弃（绝不再触碰已拆除的场景图），刚插入而尚未进簿记的空行
+  占位符就地清掉，初始 computation 内重入时 computed 由 `render()` 末尾补销毁
+  （不泄漏数据源订阅）；`root.render` 检测到重入后不再置 `attached` / 派发
+  `attach`，root 保持一致的「已销毁」状态、可直接重新 render。异常绝不抛回
+  `root.render()` / 业务写入点，容器不留孤儿（`error-hook-reentrant-destroy.test`）。
 - `destroy` 销毁整棵 Host 树（场景图上 axle 创建的节点全部移除），不销毁容器本身。
 
 ## 5. 非目标（Phase 1 明确不做）

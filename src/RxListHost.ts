@@ -38,6 +38,14 @@ export class RxListHost implements Host {
   hosts?: Host[]
   rowContext?: PathContext
   hostRenderComputed?: ReturnType<typeof computed>
+  /**
+   * destroy 是否已执行。error 钩子可能在行错误上报时**同步重入**
+   * `root.destroy()`（「出错整体卸载」的错误边界写法，doc/02 §4）——彼时
+   * computation / applyPatch 的建行循环还在栈上，置位后全部循环立即停手，
+   * 绝不再触碰已拆除的场景图（否则 insertBefore 会踩到已销毁的锚点，
+   * 异常从 root.render / 业务写入点冒出）。
+   */
+  destroyed = false
   constructor(
     public source: RxList<unknown>,
     public placeholder: IUI,
@@ -68,10 +76,27 @@ export class RxListHost implements Host {
    *  列表的后续 splice/reorder 不会基于错误簿记操作场景图。
    */
   createRowHost(item: unknown, anchor: IUI): Host {
+    // 已销毁（error 钩子重入 root.destroy()，见 destroyed 字段注释）：占位符
+    // 与锚点都已拆除，返回一个**不进场景图**的游离空行维持「必然返回可用
+    // host」的契约形状——簿记此刻已无意义，游离节点随宿主一起被 GC。
+    // 只在错误重入路径上发生，正常路径多一次布尔检查。
+    if (this.destroyed) {
+      return new EmptyHost(createPlaceholder('list row (destroyed)'), this.rowContext!)
+    }
     // boundary（本行区间的前界）与 anchor（后界）都不属于本行，
     // 行渲染只会在两者之间插入节点，渲染期间两者都稳定，可用于失败回滚。
+    // 尾部快速路径（AGENTS §1，与 insertBefore 同一手法）：初始挂载与批量
+    // append（窗口化的主路径恒定 append）的锚点是常驻 list 占位符 ===
+    // 最后一个 child，每行一次的全长 indexOf 会让 n 行初始挂载额外背上
+    // O(n²) 的扫描（实测 32k 行约占初始挂载耗时的三成）。头部/中部 splice
+    // 的锚点在前段，回退 indexOf 保持 O(锚点下标)。正常路径多一次指针比较。
     const parentChildren = anchor.parent?.children
-    const anchorIndex = parentChildren ? parentChildren.indexOf(anchor) : -1
+    const lastIndex = parentChildren ? parentChildren.length - 1 : -1
+    const anchorIndex = !parentChildren
+      ? -1
+      : parentChildren[lastIndex] === anchor
+        ? lastIndex
+        : parentChildren.indexOf(anchor)
     const boundary = anchorIndex > 0 ? (parentChildren![anchorIndex - 1] as IUI) : null
     const rowPlaceholder = createPlaceholder('list row')
     insertBefore(rowPlaceholder, anchor)
@@ -124,6 +149,11 @@ export class RxListHost implements Host {
     //    承担（错误契约：区域降级、应用存活，doc/02 §3.2）；async 场景向上抛
     //    仍是 unhandled rejection。两种形态都必须在这里降级消化。
     this.reportRowError(error)
+    // CAUTION error 钩子可能同步重入 root.destroy()（见 destroyed 字段注释）：
+    //  destroy 遍历的是 hosts 簿记，而本空行尚未被调用方 push 进去，刚插入的
+    //  占位符 destroy 够不到——必须就地清掉，否则泄漏成容器里的永久孤儿节点
+    //  （违反「绝不留孤儿」的事务化契约）。只在错误重入路径上多一次判断。
+    if (this.destroyed) destroyNode(rowPlaceholder)
     return emptyRow
   }
   private reportRowError(error: unknown): void {
@@ -188,6 +218,9 @@ export class RxListHost implements Host {
           const hosts = host.hosts!
           const data = source.data
           for (let i = 0; i < data.length; i++) {
+            // error 钩子重入 root.destroy()（行错误上报时同步销毁本 host，
+            // 见 destroyed 字段注释）：剩余行全部放弃，绝不再触碰场景图
+            if (host.destroyed) break
             hosts.push(host.createRowHost(data[i], host.placeholder))
           }
         } finally {
@@ -199,6 +232,9 @@ export class RxListHost implements Host {
         this.pauseCollectChild()
         try {
           for (const info of triggerInfos) {
+            // error 钩子重入 root.destroy()（见 destroyed 字段注释）：剩余
+            // patch 全部跳过——场景图已拆除，增量描述不再有可应用的对象
+            if (host.destroyed) break
             // CAUTION patch 在 data0 的 computed 里执行。data0 >= 2.2 同步 patch
             //  是同步执行的（有 try/finally 恢复），向上抛会同步抛回业务写入点；
             //  按错误契约（doc/02 §3.2）结构性 patch 错误应就地降级 + 自愈重建，
@@ -226,7 +262,8 @@ export class RxListHost implements Host {
           }
           // 开发期自检：不变量破坏（契约外用法把簿记与场景图弄失步）在
           // 每个 patch 批次后立即暴露并自愈。生产路径只多一次布尔检查。
-          if (host.diagnosticsEnabled) {
+          // 已销毁（error 钩子重入）时跳过：占位符已拆除，自检必然误报。
+          if (!host.destroyed && host.diagnosticsEnabled) {
             try {
               host.assertListInvariants()
             } catch (error) {
@@ -242,6 +279,12 @@ export class RxListHost implements Host {
       },
       true,
     )
+    // CAUTION destroy() 可能在初始 computation 内被重入调用（行错误 → error
+    //  钩子 → root.destroy()）：彼时本字段尚未赋值，destroy() 的
+    //  destroyComputed 够不到——不补销毁的话 computed 会一直订阅 source，
+    //  每次列表写入都空跑一轮 patch（被 destroyed 守卫拦下，但订阅本身泄漏）。
+    //  只在错误重入路径上发生，正常路径多一次布尔检查。
+    if (this.destroyed) destroyComputed(this.hostRenderComputed)
   }
   applyTriggerInfo(info: TriggerInfo): void {
     const { method, argv, key, methodResult, type } = info
@@ -456,6 +499,8 @@ export class RxListHost implements Host {
    * 只在结构性 patch 失败（簿记可能已与场景图失步）时调用，正常路径不经过。
    */
   rebuildAllRows(): void {
+    // 已销毁（error 钩子重入 root.destroy()）：没有可重建的区间，直接放弃
+    if (this.destroyed) return
     const hosts = this.hosts!
     for (const rowHost of hosts) {
       // 失步状态下行销毁是尽力而为（个别行可能已半损坏）；行 host 各自持有
@@ -470,7 +515,11 @@ export class RxListHost implements Host {
     }
   }
   destroy(parentHandle?: boolean): void {
-    // render 之前就被销毁（所在渲染事务回滚）时 computed 尚未创建
+    // 先置位再拆除：destroy 可能是 error 钩子从建行循环里重入调用的
+    //（见 destroyed 字段注释），置位让栈上还没跑完的循环立即停手。
+    this.destroyed = true
+    // render 之前就被销毁（所在渲染事务回滚）时 computed 尚未创建；
+    // 初始 computation 内被重入时也尚未赋值，由 render() 末尾补销毁。
     if (this.hostRenderComputed) destroyComputed(this.hostRenderComputed)
     this.hosts?.forEach((host) => this.destroyRowHost(host, parentHandle))
     if (!parentHandle) destroyNode(this.placeholder)
