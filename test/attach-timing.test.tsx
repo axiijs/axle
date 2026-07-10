@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { atom, RxList } from 'data0'
-import { Leafer } from 'leafer-ui'
+import { Group, Leafer } from 'leafer-ui'
 import type { ILeaferBase, IUI } from 'leafer-ui'
-import { isAttachedTo } from '@axiijs/axle'
+import { createRoot, isAttachedTo } from '@axiijs/axle'
 import type { Props, RenderContext } from '@axiijs/axle'
 import { mount, tick } from './helpers.js'
 
@@ -270,5 +270,49 @@ describe('组件 layoutEffect 的连通时机（动态挂载）', () => {
     // mount 内部完成 render + attach 派发：layoutEffect 已执行且已连通
     expect(log.length).toBe(1)
     expect(isAttachedTo(log[0]!, container)).toBe(true)
+  })
+
+  it('root attach 前的快路径：无 layoutEffect 且无组件 ref 的组件不注册 attach 监听', () => {
+    const container = new Group() as unknown as IUI
+    const root = createRoot(container)
+    const onSpy = vi.spyOn(root, 'on')
+    const layoutLog: boolean[] = []
+    const refLog: unknown[] = []
+
+    function Plain() {
+      return <rect width={1} />
+    }
+    function WithLayout(_props: Props, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        layoutLog.push(root.attached)
+      })
+      return <rect width={2} />
+    }
+    function Exposing(_props: Props, { expose }: RenderContext) {
+      expose({ tag: 'exposed' })
+      return <rect width={3} />
+    }
+
+    root.render(
+      <group>
+        <Plain />
+        <Plain />
+        <WithLayout />
+        <Exposing
+          ref={(value: unknown) => {
+            if (value) refLog.push(value)
+          }}
+        />
+      </group>,
+    )
+
+    // 与 attach 后的分支同一快路径判据：两个 Plain 不注册监听，
+    // 带 layoutEffect / 组件 ref 的各注册一个（初始渲染大树省 O(组件数) 条目）
+    const attachRegistrations = onSpy.mock.calls.filter(([event]) => event === 'attach')
+    expect(attachRegistrations.length).toBe(2)
+    // 行为不变：layoutEffect 在 attach 后执行、组件 ref 正常 attach
+    expect(layoutLog).toEqual([true])
+    expect(refLog).toEqual([{ tag: 'exposed' }])
+    root.destroy()
   })
 })

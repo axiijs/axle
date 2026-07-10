@@ -141,7 +141,11 @@ export class ComponentHost implements Host {
         // 必须取消，否则连通后会对已销毁的组件执行 layoutEffect / ref。
         this.removeAttachListener = this.pathContext.root.deferAttached(this, this.runLayoutEffect)
       }
-    } else {
+    } else if (this.layoutEffects || this.refProp) {
+      // 与 attach 后的分支同一快路径判据：无 layoutEffect 且无组件 ref 的组件
+      // 完全跳过 attach 监听——初次渲染一棵大树时省 O(组件数) 个 once 闭包与
+      // 监听表条目，attach 派发也不再空跑它们（layoutEffects 在组件函数执行
+      // 期间注册，此刻已定型）。
       // 一定要保存退订函数：组件若在 root attach 之前被销毁，必须退订，
       // 否则 attach 时会对已销毁的组件执行 layoutEffect / ref。
       this.removeAttachListener = this.pathContext.root.on('attach', this.runLayoutEffect, {
