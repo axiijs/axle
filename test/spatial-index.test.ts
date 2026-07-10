@@ -13,6 +13,12 @@ describe('boundsIntersect', () => {
 })
 
 describe('SpatialIndex', () => {
+  it('rejects invalid cell sizes before accepting entries', () => {
+    for (const cellSize of [0, -1, Infinity, -Infinity, NaN]) {
+      expect(() => new SpatialIndex({ cellSize })).toThrow(/finite positive/)
+    }
+  })
+
   it('set / get / has / delete / size', () => {
     const index = new SpatialIndex<number>({ cellSize: 100 })
     expect(index.size).toBe(0)
@@ -71,6 +77,56 @@ describe('SpatialIndex', () => {
     unsubscribe()
     index.set(2, b1)
     expect(changes.length).toBe(3)
+  })
+
+  it('isolates throwing subscribers so every consumer observes the committed change', () => {
+    const handled: { error: unknown; source: string; context: unknown }[] = []
+    const index = new SpatialIndex<number>({
+      cellSize: 100,
+      onError: (error, info) => handled.push({ error, source: info.source, context: info.context }),
+    })
+    const changes: SpatialIndexChange<number>[] = []
+    index.subscribe(() => {
+      throw new Error('subscriber failed')
+    })
+    index.subscribe((change) => changes.push(change))
+
+    expect(() => index.set(1, { x: 0, y: 0, width: 10, height: 10 })).not.toThrow()
+    expect(index.has(1)).toBe(true)
+    expect(changes).toEqual([
+      { id: 1, oldBounds: null, newBounds: { x: 0, y: 0, width: 10, height: 10 } },
+    ])
+    expect(handled).toHaveLength(1)
+    expect(handled[0]).toMatchObject({
+      source: 'spatial-index-listener',
+      context: 1,
+    })
+    expect(String(handled[0]!.error)).toContain('subscriber failed')
+
+    // 相同值重写会被去重，证明正确性不能依赖“下次 set 再补通知”
+    index.set(1, { x: 0, y: 0, width: 10, height: 10 })
+    expect(changes).toHaveLength(1)
+  })
+
+  it('contains errors thrown by the configured error handler', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const index = new SpatialIndex<number>({
+        onError: () => {
+          throw new Error('handler failed')
+        },
+      })
+      const healthy = vi.fn()
+      index.subscribe(() => {
+        throw new Error('listener failed')
+      })
+      index.subscribe(healthy)
+      expect(() => index.set(1, { x: 0, y: 0, width: 10, height: 10 })).not.toThrow()
+      expect(healthy).toHaveBeenCalledTimes(1)
+      expect(consoleError).toHaveBeenCalledTimes(2)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('does not notify when bounds are unchanged (write-through dedupe)', () => {
@@ -139,6 +195,20 @@ describe('SpatialIndex', () => {
     expect(index.search({ x: -1, y: -1, width: 20, height: 20 })).toEqual(['a'])
   })
 
+  it('set rejects zero and negative dimensions without leaving partial entries', () => {
+    const index = new SpatialIndex<string>()
+    const good = { x: 0, y: 0, width: 10, height: 10 }
+    for (const bounds of [
+      { ...good, width: 0 },
+      { ...good, width: -1 },
+      { ...good, height: 0 },
+      { ...good, height: -1 },
+    ]) {
+      expect(() => index.set('bad', bounds)).toThrow(/must be positive/)
+      expect(index.has('bad')).toBe(false)
+    }
+  })
+
   it('set 拒绝有限但巨大的尺寸（cell 覆盖数超出设计包络会让写入循环失控）', () => {
     const index = new SpatialIndex<string>({ cellSize: 512 })
     // width 1e8 → 约 1.9e5 × 1.9e5 个 cell：仅 isFinite 防不住，不断言就是挂死
@@ -160,9 +230,9 @@ describe('SpatialIndex', () => {
     // 编码域内的极远坐标照常工作（约 ±1.7e10 px）
     const nearEdge = (2 ** 25 - 2) * 512
     index.set('far', { x: nearEdge, y: -nearEdge, width: 10, height: 10 })
-    expect(
-      index.search({ x: nearEdge - 5, y: -nearEdge - 5, width: 100, height: 100 }),
-    ).toEqual(['far'])
+    expect(index.search({ x: nearEdge - 5, y: -nearEdge - 5, width: 100, height: 100 })).toEqual([
+      'far',
+    ])
   })
 
   it('包络断言失败不留半写入状态（更新路径旧条目原样保留）', () => {
@@ -194,9 +264,10 @@ describe('SpatialIndex', () => {
     expect(index.search({ x: -5e8, y: -5e8, width: 1e9, height: 1e9 }).sort()).toEqual(['a', 'b'])
 
     // Infinity 尺寸矩形（viewRect 除以异常 scale 的典型形态）同样安全
-    expect(
-      index.search({ x: -1e15, y: -1e15, width: Infinity, height: Infinity }).sort(),
-    ).toEqual(['a', 'b'])
+    expect(index.search({ x: -1e15, y: -1e15, width: Infinity, height: Infinity }).sort()).toEqual([
+      'a',
+      'b',
+    ])
     // x/width 相加为 NaN 的退化矩形按 boundsIntersect 语义不与任何条目相交
     expect(index.search({ x: -Infinity, y: 0, width: Infinity, height: 100 })).toEqual([])
 

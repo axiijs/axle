@@ -43,6 +43,10 @@ export class RxListHost implements Host {
     public placeholder: IUI,
     public pathContext: PathContext,
   ) {}
+  /** root 级覆盖优先；未配置时保留 setListDiagnostics 的全局默认语义 */
+  private get diagnosticsEnabled(): boolean {
+    return this.pathContext.root.listDiagnostics ?? listDiagnosticsEnabled
+  }
   get firstNode(): IUI {
     return this.hosts?.[0]?.firstNode ?? this.placeholder
   }
@@ -220,7 +224,7 @@ export class RxListHost implements Host {
           }
           // 开发期自检：不变量破坏（契约外用法把簿记与场景图弄失步）在
           // 每个 patch 批次后立即暴露并自愈。生产路径只多一次布尔检查。
-          if (listDiagnosticsEnabled) {
+          if (host.diagnosticsEnabled) {
             try {
               host.assertListInvariants()
             } catch (error) {
@@ -281,7 +285,7 @@ export class RxListHost implements Host {
     // 不会破坏集合级不变量（搬移按引用、锚点实时取下标），只会以视觉叠放
     // 错乱出现、无从定位，所以这里报告而不中断：簿记调整必须跟随数据照常
     // 执行。生产路径只多一次布尔检查。
-    if (listDiagnosticsEnabled) this.reportZIndexReorderViolation()
+    if (this.diagnosticsEnabled) this.reportZIndexReorderViolation()
     const hosts = this.hosts!
     // 1. 先把 hosts 数组调整到新顺序（语义同 data0 RxList.reorder：data[to] = old[from]）
     let minChanged = Infinity

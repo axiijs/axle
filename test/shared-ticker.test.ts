@@ -152,6 +152,29 @@ describe('createSharedTicker (05 号文档 §7.1 单一全局 ticker)', () => {
     }
   })
 
+  it('routes callback failures through the configured recoverable error handler', () => {
+    const frames = manualFrames()
+    const errors: { error: unknown; source: string; operation: string | undefined }[] = []
+    const ticker = createSharedTicker({
+      schedule: frames.schedule.bind(frames),
+      onError: (error, info) =>
+        errors.push({ error, source: info.source, operation: info.operation }),
+    })
+    ticker.add(() => {
+      throw new Error('video failed')
+    })
+
+    expect(() => frames.frame()).not.toThrow()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      source: 'shared-ticker-callback',
+      operation: 'tick',
+    })
+    expect(String(errors[0]!.error)).toContain('video failed')
+    expect(frames.pending).toBe(1)
+    ticker.destroy()
+  })
+
   it('destroy cancels the loop', () => {
     const frames = manualFrames()
     const ticker = createSharedTicker({ schedule: frames.schedule.bind(frames) })

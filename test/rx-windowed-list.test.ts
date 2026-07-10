@@ -861,9 +861,10 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     expect(windowed.pendingCount).toBe(0)
   })
 
-  it('a throwing resolve drops only that card; the batch commits and draining continues', () => {
+  it('a throwing resolve reports and drops only that card; draining continues without pageerror', () => {
     const index = new SpatialIndex<number>({ cellSize: 100 })
     const scheduler = manualScheduler()
+    const errors: { error: unknown; source: string; operation: string | undefined }[] = []
     const windowed = new RxWindowedList<Card, number, string>({
       index,
       resolve: (id) => {
@@ -873,24 +874,115 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
       viewRect: () => ({ x: 0, y: 0, width: 100, height: 100 }),
       schedule: scheduler.schedule.bind(scheduler),
       now: () => 0,
+      onError: (error, info) =>
+        errors.push({ error, source: info.source, operation: info.operation }),
     })
     for (const id of [1, 2, 3, 4, 5]) index.set(id, { x: id * 5, y: id * 5, width: 10, height: 10 })
 
-    // resolve 抛错向上抛给帧调度器（保持可观测）……
-    expect(() => scheduler.settle()).toThrow('resolve failed')
-    // ……但同批已构建的行仍被提交，失败任务被放弃，后续帧继续消化剩余队列
-    scheduler.settle()
+    expect(() => scheduler.settle()).not.toThrow()
 
     const ids = windowed.rows.data.map((row) => row.id).sort((a, b) => a - b)
     expect(ids).toEqual([1, 3, 4, 5])
     // 簿记一致：mountedIds 与 rows 完全对应
     expect([...windowed.mountedIds].sort((a, b) => a - b)).toEqual([1, 3, 4, 5])
     expect(windowed.pendingCount).toBe(0)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      source: 'windowed-list-resolve',
+      operation: 'mount',
+    })
+    expect(String(errors[0]!.error)).toContain('resolve failed')
 
     // 之后的索引变更照常工作
     index.set(6, { x: 50, y: 50, width: 10, height: 10 })
     scheduler.settle()
     expect(windowed.rows.data.map((row) => row.id).sort((a, b) => a - b)).toEqual([1, 3, 4, 5, 6])
+    windowed.destroy()
+  })
+
+  it('keeps the old LOD row when replacement resolve fails and reports the exact operation', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    index.set(1, { x: 10, y: 10, width: 10, height: 10 })
+    const scheduler = manualScheduler()
+    const lod = atom('full')
+    const errors: { source: string; operation: string | undefined; context: unknown }[] = []
+    let fail = false
+    const windowed = new RxWindowedList<Card, number, string>({
+      index,
+      resolve: (id) => {
+        if (fail) throw new Error('replacement failed')
+        return { id, name: `card-${id}` }
+      },
+      viewRect: () => ({ x: 0, y: 0, width: 100, height: 100 }),
+      lod,
+      schedule: scheduler.schedule.bind(scheduler),
+      now: () => 0,
+      onError: (_error, info) =>
+        errors.push({ source: info.source, operation: info.operation, context: info.context }),
+    })
+    scheduler.settle()
+    expect(windowed.rows.data[0]?.lod).toBe('full')
+
+    fail = true
+    lod('simple')
+    expect(() => scheduler.settle()).not.toThrow()
+    expect(windowed.rows.data[0]?.lod).toBe('full')
+    expect(windowed.pendingCount).toBe(0)
+    expect(errors).toEqual([{ source: 'windowed-list-resolve', operation: 'replace', context: 1 }])
+
+    // 下一次档位触发可以正常收敛，不留下损坏簿记
+    fail = false
+    lod('full')
+    scheduler.settle()
+    lod('simple')
+    scheduler.settle()
+    expect(windowed.rows.data[0]?.lod).toBe('simple')
+    windowed.destroy()
+  })
+
+  it('contains non-resolve frame errors and reports them through onError', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    const scheduler = manualScheduler()
+    const errors: string[] = []
+    let reads = 0
+    const windowed = new RxWindowedList<Card, number>({
+      index,
+      resolve: (id) => ({ id, name: `card-${id}` }),
+      viewRect: () => {
+        reads++
+        if (reads === 2) throw new Error('view failed')
+        return { x: 0, y: 0, width: 100, height: 100 }
+      },
+      schedule: scheduler.schedule.bind(scheduler),
+      now: () => 0,
+      onError: (error, info) => errors.push(`${info.source}:${String(error)}`),
+    })
+    expect(() => scheduler.settle()).not.toThrow()
+    expect(errors).toEqual(['windowed-list-frame:Error: view failed'])
+    windowed.destroy()
+  })
+
+  it('contains errors from interacting while deciding work and rescheduling', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    const scheduler = manualScheduler()
+    const operations: (string | undefined)[] = []
+    let reads = 0
+    const windowed = new RxWindowedList<Card, number>({
+      index,
+      resolve: (id) => ({ id, name: `card-${id}` }),
+      viewRect: () => ({ x: 0, y: 0, width: 100, height: 100 }),
+      interacting: () => {
+        reads++
+        if (reads > 1) throw new Error('interaction failed')
+        return false
+      },
+      schedule: scheduler.schedule.bind(scheduler),
+      now: () => 0,
+      onError: (_error, info) => operations.push(info.operation),
+    })
+
+    expect(() => scheduler.frame()).not.toThrow()
+    expect(operations).toEqual(['flush', 'schedule-next-frame'])
     windowed.destroy()
   })
 })

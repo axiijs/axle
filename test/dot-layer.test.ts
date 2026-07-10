@@ -135,6 +135,55 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
     layer.destroy()
   })
 
+  it('isolates per-entry color failures so remaining blocks still draw', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    index.set(1, { x: 0, y: 0, width: 20, height: 20 })
+    index.set(2, { x: 30, y: 0, width: 20, height: 20 })
+    const errors: { source: string; context: unknown }[] = []
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      color: (id) => {
+        if (id === 1) throw new Error('bad color')
+        return '#abc'
+      },
+      inset: 0,
+      schedule: () => () => {},
+      onError: (_error, info) => errors.push({ source: info.source, context: info.context }),
+    })
+
+    expect([...drawLayer(layer.ui as never)]).toEqual([
+      { color: '#abc', x: 30, y: 0, width: 20, height: 20 },
+    ])
+    expect(errors).toEqual([{ source: 'dot-layer-color', context: 1 }])
+    layer.destroy()
+  })
+
+  it('isolates aggregate color failures without aborting the draw pass', () => {
+    const index = new SpatialIndex<number>({ cellSize: 100 })
+    index.set(1, { x: 0, y: 0, width: 20, height: 20 })
+    const errors: string[] = []
+    const layer = createDotLayer({
+      index,
+      contentBounds: CONTENT,
+      typicalItemSize: 200,
+      aggregateBelowPx: 4,
+      aggregateColor: () => {
+        throw new Error('bad aggregate color')
+      },
+      schedule: () => () => {},
+      onError: (_error, info) => errors.push(info.source),
+    })
+
+    expect([
+      ...drawLayer(layer.ui as never, {
+        world: { a: 0.01, d: 0.01, e: CONTENT.x * 0.01, f: CONTENT.y * 0.01 },
+      }),
+    ]).toEqual([])
+    expect(errors).toEqual(['dot-layer-aggregate-color'])
+    layer.destroy()
+  })
+
   /** 断言矩形列表完整覆盖某个区域（外扩 1px 的失效契约） */
   function coveredBy(regions: IndexBounds[], target: IndexBounds): boolean {
     return regions.some(
@@ -280,7 +329,12 @@ describe('DotLayer (05 号文档 §3.3 常驻底衬层)', () => {
     // 交错插入：相邻条目彼此相交成链，间隔一片远处条目
     for (let i = 0; i < 12; i++) {
       index.set(i, { x: i * 60, y: 0, width: 100, height: 50 }) // 链式重叠
-      index.set(100 + i, { x: (i % 4) * 900, y: 2000 + Math.floor(i / 4) * 300, width: 80, height: 80 })
+      index.set(100 + i, {
+        x: (i % 4) * 900,
+        y: 2000 + Math.floor(i / 4) * 300,
+        width: 80,
+        height: 80,
+      })
     }
     frameCallback!()
 
