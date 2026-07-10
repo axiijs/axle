@@ -85,8 +85,18 @@ export class RxListHost implements Host {
     }
     // boundary（本行区间的前界）与 anchor（后界）都不属于本行，
     // 行渲染只会在两者之间插入节点，渲染期间两者都稳定，可用于失败回滚。
+    // 尾部快速路径（AGENTS §1，与 insertBefore 同一手法）：初始挂载与批量
+    // append（窗口化的主路径恒定 append）的锚点是常驻 list 占位符 ===
+    // 最后一个 child，每行一次的全长 indexOf 会让 n 行初始挂载额外背上
+    // O(n²) 的扫描（实测 32k 行约占初始挂载耗时的三成）。头部/中部 splice
+    // 的锚点在前段，回退 indexOf 保持 O(锚点下标)。正常路径多一次指针比较。
     const parentChildren = anchor.parent?.children
-    const anchorIndex = parentChildren ? parentChildren.indexOf(anchor) : -1
+    const lastIndex = parentChildren ? parentChildren.length - 1 : -1
+    const anchorIndex = !parentChildren
+      ? -1
+      : parentChildren[lastIndex] === anchor
+        ? lastIndex
+        : parentChildren.indexOf(anchor)
     const boundary = anchorIndex > 0 ? (parentChildren![anchorIndex - 1] as IUI) : null
     const rowPlaceholder = createPlaceholder('list row')
     insertBefore(rowPlaceholder, anchor)

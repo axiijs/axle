@@ -97,10 +97,14 @@ patch（预留口子）、leafer-editor 集成（Phase 3）、§12 全部。
   （每绑定省一个对象 + 一个闭包）；ComponentHost 的 effect/回调集合惰性
   分配，render 后销毁自己的占位符（区间委托给 innerHost，每组件少一个
   常驻场景图节点，02 号文档契约已同步修订）；
-- **杂项**：`insertBefore` 尾部锚点快速路径（窗口化挂载的主路径不再
-  线性扫 children）；`RxViewportInteracting` 改惰性单定时器（手势帧不再
-  每事件一对 clearTimeout/setTimeout）；压测页连线 path 改 leafer 命令
-  数组（省字符串构造 + 引擎解析）。
+- **杂项**：`insertBefore` 尾段锚点快速路径（探测倒数 3 位——行占位符 /
+  行内容 / 组件行内容三种挂载形态的锚点都在尾段，只查最后一位会让批量
+  挂载的行内容插入退化成全长扫描）+ `RxListHost.createRowHost` 的 boundary
+  定位同款尾部快路径（初始挂载 / 批量 append 的锚点是最后一位的常驻 list
+  占位符，逐行全长 indexOf 会让 n 行初始挂载背上 O(n²)，实测 32k 行两处
+  合计约占初始挂载耗时的六成）；`RxViewportInteracting` 改惰性单定时器
+  （手势帧不再每事件一对 clearTimeout/setTimeout）；压测页连线 path 改
+  leafer 命令数组（省字符串构造 + 引擎解析）。
 - **配套**：`scripts/stress-smoke.mjs`（headless Chrome 对压测页的
   端到端冒烟，覆盖 §10 验收标准的自动化子集）。
 

@@ -105,6 +105,27 @@ describe('insertBefore', () => {
       'cannot insert before a detached anchor',
     )
   })
+
+  it('locates anchors at any position (near-tail probe + front indexOf fallback)', () => {
+    const parent = new Group()
+    const anchors = Array.from({ length: 6 }, (_, i) => named(`a${i}`))
+    for (const anchor of anchors) parent.add(anchor as never)
+    insertBefore(named('head'), anchors[0]!) // 头部：indexOf 回退
+    insertBefore(named('mid'), anchors[3]!) // 中部：indexOf 回退
+    insertBefore(named('last'), anchors[5]!) // 倒数第 1：尾段探测
+    expect(childNames(parent)).toEqual(['head', 'a0', 'a1', 'a2', 'mid', 'a3', 'a4', 'last', 'a5'])
+    // 倒数第 2 / 第 3（尾段探测覆盖的另两种挂载形态）
+    insertBefore(named('t2'), parent.children[parent.children.length - 2] as IUI) // before 'last'
+    insertBefore(named('t3'), parent.children[parent.children.length - 3] as IUI) // before 't2'
+    expect(childNames(parent)).toEqual(
+      ['head', 'a0', 'a1', 'a2', 'mid', 'a3', 'a4', 't3', 't2', 'last', 'a5'],
+    )
+    // 同父前向搬移的下标修正与尾段探测叠加：把头部节点搬到最后一个锚点之前
+    insertBefore(parent.children[0] as IUI, anchors[5]!)
+    expect(childNames(parent)).toEqual(
+      ['a0', 'a1', 'a2', 'mid', 'a3', 'a4', 't3', 't2', 'last', 'head', 'a5'],
+    )
+  })
 })
 
 describe('destroyNode', () => {
