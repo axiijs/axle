@@ -173,8 +173,10 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
       } catch (dispatchError) {
         console.error('[axle] root error dispatch failed, ignoring:', dispatchError)
       }
-      const operation = info.operation ? ` (${info.operation})` : ''
-      console.error(`[axle] ${info.source}${operation} failed, skipping:`, error)
+      // CAUTION info 按可缺失处理：类型上必传，但 JS 调用方按直觉写
+      //  root.reportError(err) 时也不允许违背「本函数永不抛出」的承诺。
+      const operation = info?.operation ? ` (${info.operation})` : ''
+      console.error(`[axle] ${info?.source ?? 'root'}${operation} failed, skipping:`, error)
     },
     deferAttached(host, run) {
       const entry: AttachEntry = { host, run, cancelled: false }

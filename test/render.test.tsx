@@ -98,6 +98,29 @@ describe('root events', () => {
     }
   })
 
+  it('reportError without info stays non-throwing (JS caller defensive path)', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const error = new Error('no info boom')
+    const reportWithoutInfo = root.reportError as unknown as (error: unknown) => void
+
+    // 无钩子：console.error 兜底且绝不抛出（「本函数永不抛出」的承诺对 JS 调用方同样成立）
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(() => reportWithoutInfo(error)).not.toThrow()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(String(consoleError.mock.calls[0]![0])).toContain('[axle] root')
+    } finally {
+      consoleError.mockRestore()
+    }
+
+    // 有钩子：错误照常交给钩子
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    expect(() => reportWithoutInfo(error)).not.toThrow()
+    expect(errors).toEqual([error])
+  })
+
   it('dispatches attach on render and detach on destroy', () => {
     const container = new Group()
     const root = createRoot(container as never)
