@@ -338,7 +338,11 @@ axle 占位符会被排到带 zOrder 的卡片之前）。这使 02 号文档 Ho
   行 host 按引用持有、锚点取 `firstNode`），splice 路径可以容忍物理重排；
 - **绑定 zIndex 的列表禁止触发 reorder patch**（`RxListHost` 的 LIS 搬移
   假设物理顺序与簿记一致）——窗口化列表只发 splice，天然满足，但必须
-  写进契约防止未来误用；
+  写进契约防止未来误用。**开发期运行时防线**：`setListDiagnostics(true)`
+  时 `RxListHost.handleReorder` 检测分支内的 zIndex 参与排序并报告契约
+  违例（error 钩子 / `console.error`）——误用只会以视觉叠放错乱出现、
+  无从定位，必须在开发期变成显式错误；报告不中断簿记调整（生产路径
+  只多一次布尔检查）；
 - 「zIndex 重排 + 占位符锚点插入删除」的**兼容性测试**是实施硬性项
   （见实施顺序表），02 号文档同步补例外说明；
 - **备选方案**（若测试发现问题的回退路径）：不用 zIndex，窗口化输出按

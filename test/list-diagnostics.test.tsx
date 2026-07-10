@@ -84,6 +84,52 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     root.destroy()
   })
 
+  it('绑定 zIndex 的列表触发 reorder patch 时报告契约违例（doc/05 §2.3 的运行时防线）', () => {
+    setListDiagnostics(true)
+    const list = new RxList<number>([3, 1, 2])
+    const { container, root } = mount(
+      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+    )
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+
+    list.sortSelf((a, b) => a - b)
+    expect(errors.length).toBe(1)
+    expect(String(errors[0])).toMatch(/reorder patch on a zIndex-bound list/)
+    // 报告不中断：簿记照常跟随数据（集合级一致，视觉次序由 zIndex 决定）
+    expect(rowTexts(container).sort()).toEqual(['1', '2', '3'])
+    list.push(4)
+    expect(errors.length).toBe(1) // splice 照常，无二次报告
+    root.destroy()
+  })
+
+  it('无 zIndex 的列表 reorder 不误报（LIS 主路径不受自检影响）', () => {
+    setListDiagnostics(true)
+    const list = new RxList<number>([3, 1, 2])
+    const { container, root } = mount(
+      <group>{list.map((v) => <text>{() => String(v)}</text>)}</group>,
+    )
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    list.sortSelf((a, b) => a - b)
+    expect(errors.length).toBe(0)
+    expect(rowTexts(container)).toEqual(['1', '2', '3'])
+    root.destroy()
+  })
+
+  it('未开启诊断时 zIndex × reorder 不报告（生产路径行为不变）', () => {
+    const list = new RxList<number>([3, 1, 2])
+    const { container, root } = mount(
+      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+    )
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    list.sortSelf((a, b) => a - b)
+    expect(errors.length).toBe(0)
+    expect(rowTexts(container).sort()).toEqual(['1', '2', '3'])
+    root.destroy()
+  })
+
   it('未开启时不做自检（失步静默保留，行为与旧版一致）', () => {
     const list = new RxList<number>([1, 2])
     const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)
