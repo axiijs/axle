@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { atom, RxList } from 'data0'
-import { Group } from 'leafer-ui'
+import { Group, Rect } from 'leafer-ui'
 import type { IText, IUI } from 'leafer-ui'
 import { createRoot } from '@axiijs/axle'
 import { createHost } from '../src/createHost.js'
@@ -63,6 +63,44 @@ describe('host range semantics before render', () => {
     )
     expect(() => host.firstNode).toThrow('has not rendered yet')
     expect(host.getNodes()).toEqual([])
+  })
+})
+
+describe('unconsumed placeholder fallback cleanup (doc/02 §3.1)', () => {
+  // render 未执行（或中途抛错、占位符未消费）的 host 走非 parentHandle 销毁时，
+  // 必须清掉自己的占位符——它已经进了场景图，簿记之外没人够得到它。
+  const sources: [string, () => unknown][] = [
+    ['PrimitiveHost', () => 'text'],
+    ['AtomHost', () => atom('x')],
+    ['RawUIHost', () => new Rect()],
+  ]
+
+  for (const [name, makeSource] of sources) {
+    it(`${name}: destroy before render removes the placeholder (no orphan)`, () => {
+      const { container, pathContext, placeholder } = makeContext()
+      const host = createHost(makeSource(), placeholder, pathContext)
+      expect(container.children!.length).toBe(1)
+      host.destroy()
+      expect(container.children!.length).toBe(0)
+    })
+
+    it(`${name}: parentHandle destroy leaves the placeholder to the ancestor`, () => {
+      const { container, pathContext, placeholder } = makeContext()
+      const host = createHost(makeSource(), placeholder, pathContext)
+      host.destroy(true)
+      // parentHandle 契约：不碰场景图，占位符由祖先整体销毁
+      expect(container.children!.length).toBe(1)
+      expect(placeholder.destroyed).toBeFalsy()
+    })
+  }
+
+  it('rendered hosts do not double-destroy the consumed placeholder', () => {
+    const { container, pathContext, placeholder } = makeContext()
+    const host = createHost('hello', placeholder, pathContext)
+    host.render()
+    expect(container.children!.length).toBe(1) // 只剩 Text，占位符已消费
+    host.destroy()
+    expect(container.children!.length).toBe(0)
   })
 })
 

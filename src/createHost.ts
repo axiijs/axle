@@ -36,34 +36,46 @@ export class EmptyHost implements Host {
 /** 静态 string / number child：渲染为一个 Text 节点 */
 export class PrimitiveHost implements Host {
   textUI?: IUI
+  placeholder: IUI | null
   constructor(
     public source: string | number,
-    public placeholder: IUI,
+    placeholder: IUI,
     public pathContext: PathContext,
-  ) {}
+  ) {
+    this.placeholder = placeholder
+  }
   get firstNode(): IUI {
-    return this.textUI ?? this.placeholder
+    return this.textUI ?? this.placeholder!
   }
   getNodes(): IUI[] {
-    return this.textUI ? [this.textUI] : [this.placeholder]
+    return this.textUI ? [this.textUI] : [this.placeholder!]
   }
   render(): void {
     this.textUI = createUI('Text', { text: String(this.source) })
-    insertBefore(this.textUI, this.placeholder)
-    destroyNode(this.placeholder)
+    insertBefore(this.textUI, this.placeholder!)
+    destroyNode(this.placeholder!)
+    this.placeholder = null
   }
   destroy(parentHandle?: boolean): void {
     if (!parentHandle && this.textUI) destroyNode(this.textUI)
+    // 未消费的占位符只出现在「render 未执行 / 中途抛错」之后（正常 render
+    // 末尾已消费并置 null）：非 parentHandle 销毁必须清掉，否则成为永久
+    // 孤儿节点（doc/02 §3.1 的占位符兜底契约，与 ElementHost 一致）。
+    // parentHandle 路径由祖先整体销毁 / 区间回滚覆盖。正常路径只多一次判空。
+    if (!parentHandle && this.placeholder) destroyNode(this.placeholder)
   }
 }
 
 /** 直接插入用户给的 Leafer UI 实例（逃生舱）。节点的销毁归属用户。 */
 export class RawUIHost implements Host {
+  placeholder: IUI | null
   constructor(
     public source: IUI,
-    public placeholder: IUI,
+    placeholder: IUI,
     public pathContext: PathContext,
-  ) {}
+  ) {
+    this.placeholder = placeholder
+  }
   get firstNode(): IUI {
     return this.source
   }
@@ -71,13 +83,16 @@ export class RawUIHost implements Host {
     return [this.source]
   }
   render(): void {
-    insertBefore(this.source, this.placeholder)
-    destroyNode(this.placeholder)
+    insertBefore(this.source, this.placeholder!)
+    destroyNode(this.placeholder!)
+    this.placeholder = null
   }
-  destroy(): void {
+  destroy(parentHandle?: boolean): void {
     // 无论哪条销毁路径都只从场景图解挂，绝不销毁用户持有的实例
     //（父级整体 destroy 场景图前必须先摘出来，否则会被连带销毁）
     this.source.remove()
+    // 未消费的占位符兜底与 PrimitiveHost 同一契约（doc/02 §3.1）
+    if (!parentHandle && this.placeholder) destroyNode(this.placeholder)
   }
 }
 

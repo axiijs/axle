@@ -22,6 +22,7 @@ export function stringValue(v: unknown): string {
  */
 export class AtomHost extends BindingEffect implements Host {
   textUI?: IText
+  placeholder: IUI | null
   /**
    * 初次渲染（用户 render 调用栈上的初始求值）是否已经结束。
    * CAUTION 判定的是「是否还在初次渲染调用栈上」而不是「首次求值是否成功」：
@@ -32,18 +33,19 @@ export class AtomHost extends BindingEffect implements Host {
   rendered = false
   constructor(
     public source: Atom<unknown>,
-    public placeholder: IUI,
+    placeholder: IUI,
     public pathContext: PathContext,
   ) {
     super()
+    this.placeholder = placeholder
     // Host 的生命周期由宿主树显式管理，不能被创建时的 collect frame / 父 effect 接管
     this.detachFromCreationContext()
   }
   get firstNode(): IUI {
-    return this.textUI ?? this.placeholder
+    return this.textUI ?? this.placeholder!
   }
   getNodes(): IUI[] {
-    return this.textUI ? [this.textUI] : [this.placeholder]
+    return this.textUI ? [this.textUI] : [this.placeholder!]
   }
   // BindingEffect 触发时的回调（原型方法，替代构造器闭包）
   update(): void {
@@ -63,8 +65,9 @@ export class AtomHost extends BindingEffect implements Host {
   }
   render(): void {
     const textUI = (this.textUI = createUI('Text') as IText)
-    insertBefore(textUI, this.placeholder)
-    destroyNode(this.placeholder)
+    insertBefore(textUI, this.placeholder!)
+    destroyNode(this.placeholder!)
+    this.placeholder = null
     // rendered 在 run 返回后置位（与 FunctionHost.render 同一范式）：
     // 无钩子初始抛错从 run 冒出时保持 false（向上抛契约不变）；
     // 钩子消费初始错误后置 true，此后的更新错误一律降级。
@@ -76,5 +79,7 @@ export class AtomHost extends BindingEffect implements Host {
     //  （parentHandle）与 ReactiveEffect.destroy 的 ignoreChildren 语义不同，不能透传
     ReactiveEffect.destroy(this)
     if (!parentHandle && this.textUI) destroyNode(this.textUI)
+    // 未消费的占位符兜底与 PrimitiveHost 同一契约（doc/02 §3.1）
+    if (!parentHandle && this.placeholder) destroyNode(this.placeholder)
   }
 }
