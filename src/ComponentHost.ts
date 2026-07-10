@@ -193,7 +193,15 @@ export class ComponentHost implements Host {
     if (this.refAttached) {
       runCleanupIsolated(root, () => detachRef(this.refProp), 'component ref detach')
     }
-    this.frame?.forEach((cleanup) => cleanup.destroy())
+    // CAUTION frame 里是 render 期间收集的 computed / RxList / RxLeaferState 等，
+    //  它们的 destroy 会执行用户清理代码（computed 的 onCleanup、RxLeaferState
+    //  子类的 abort），必须逐个隔离：一个抛错的 destroy 若中断 forEach，
+    //  innerHost 销毁与 attach 队列退订全部被跳过——子树的绑定 effect 泄漏成
+    //  还在响应数据更新的「活孤儿」，root.destroy 更会把异常抛回调用方、留下
+    //  没有任何恢复手段的半销毁树（违反「清理回调绝不向上抛」的硬契约）。
+    this.frame?.forEach((cleanup) =>
+      runCleanupIsolated(root, () => cleanup.destroy(), 'component render-scope cleanup'),
+    )
     this.innerHost?.destroy(parentHandle)
     // 清理回调错误绝不向上抛（见 runCleanupIsolated 的 CAUTION）：
     // 兄弟清理与剩余销毁流程（attach 队列退订、占位符移除）必须走完。
