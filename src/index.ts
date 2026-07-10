@@ -4,7 +4,9 @@ declare const __AXLE_VERSION__: string | undefined
 export const AXLE_VERSION = typeof __AXLE_VERSION__ === 'string' ? __AXLE_VERSION__ : '0.0.0-dev'
 
 export { createRoot } from './render.js'
-export type { Root } from './render.js'
+export type { CreateRootOptions, Root } from './render.js'
+
+export type { AxleErrorHandler, AxleErrorInfo, AxleErrorSource } from './diagnostics.js'
 
 export { Fragment, jsx, jsxs, isAxleNode } from './jsx-runtime.js'
 export type { AxleNode, AxleIntrinsicElements } from './jsx-runtime.js'
@@ -43,7 +45,12 @@ export type { ViewportState } from './reactiveLeaferState.js'
 export { bindEnginePosition } from './enginePosition.js'
 
 export { SpatialIndex, boundsIntersect } from './spatialIndex.js'
-export type { IndexBounds, SpatialIndexChange, SpatialIndexListener } from './spatialIndex.js'
+export type {
+  IndexBounds,
+  SpatialIndexChange,
+  SpatialIndexListener,
+  SpatialIndexOptions,
+} from './spatialIndex.js'
 
 export { rxLodLevel } from './rxLodLevel.js'
 export type { LodLevelAtom, RxLodLevelOptions } from './rxLodLevel.js'
@@ -55,4 +62,4 @@ export { DotLayer, DotLayerUI, createDotLayer } from './dotLayer.js'
 export type { DotLayerOptions } from './dotLayer.js'
 
 export { createSharedTicker } from './sharedTicker.js'
-export type { SharedTicker } from './sharedTicker.js'
+export type { SharedTicker, SharedTickerOptions } from './sharedTicker.js'

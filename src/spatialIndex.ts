@@ -3,7 +3,7 @@
  *
  * - **bounds 是 model 的一等公民**：索引只吃调用方写入的页面坐标包围盒，
  *   绝不依赖引擎 layout 的测量结果（未挂载的条目永远不会被 leafer 测量）。
- *   bounds 四个字段必须是有限数，且落在均匀网格的设计包络内（单条目
+ *   bounds 四个字段必须是有限数、width/height 必须为正，且落在均匀网格的设计包络内（单条目
  *   ≤ 2^16 个 cell、cell 坐标 ≤ ±2^25——`set` 入口断言，见方法注释）。
  * - **write-through 维护**：索引本身不做任何响应式订阅。位置/尺寸写入由
  *   调用方在数据层操作里同步调用 `set` / `delete`；索引在写入时同步派发
@@ -14,6 +14,8 @@
  * set / delete / search / forEach*，为将来替换 R-tree（rbush）留出空间。
  */
 
+import type { AxleErrorHandler } from './diagnostics.js'
+import { reportRecoverableError } from './diagnostics.js'
 import { assert } from './util.js'
 
 export type IndexBounds = {
@@ -32,6 +34,12 @@ export type SpatialIndexChange<Id> = {
 
 export type SpatialIndexListener<Id> = (change: SpatialIndexChange<Id>) => void
 
+export type SpatialIndexOptions = {
+  cellSize?: number
+  /** 可恢复错误出口；可直接传 `root.reportError` */
+  onError?: AxleErrorHandler
+}
+
 type Entry<Id> = {
   id: Id
   bounds: IndexBounds
@@ -47,6 +55,7 @@ export function boundsIntersect(a: IndexBounds, b: IndexBounds): boolean {
 
 export class SpatialIndex<Id> {
   readonly cellSize: number
+  private readonly onError: AxleErrorHandler | undefined
   private entries = new Map<Id, Entry<Id>>()
   /** cell key → 与该 cell 相交的条目集合（存 Entry 引用，遍历时不需要再查 entries） */
   private cells = new Map<number, Set<Entry<Id>>>()
@@ -72,8 +81,13 @@ export class SpatialIndex<Id> {
   private occMaxCx = -Infinity
   private occMaxCy = -Infinity
 
-  constructor(options?: { cellSize?: number }) {
+  constructor(options?: SpatialIndexOptions) {
     this.cellSize = options?.cellSize ?? 512
+    this.onError = options?.onError
+    assert(
+      Number.isFinite(this.cellSize) && this.cellSize > 0,
+      `SpatialIndex cellSize must be a finite positive number, got ${this.cellSize}`,
+    )
   }
 
   get size(): number {
@@ -101,6 +115,13 @@ export class SpatialIndex<Id> {
         Number.isFinite(bounds.width) &&
         Number.isFinite(bounds.height),
       `SpatialIndex bounds must be finite numbers, got { x: ${bounds.x}, y: ${bounds.y}, width: ${bounds.width}, height: ${bounds.height} }`,
+    )
+    // 负数/零尺寸不是合法 AABB。负尺寸足以跨过 cell 边界时会让 maxC < minC，
+    // 条目进入 entries 却不进入任何 cell；零尺寸按开区间相交语义永远不可查。
+    // 必须在任何簿记写入前拒绝，避免 has(id) 为 true 但 search 永久漏报。
+    assert(
+      bounds.width > 0 && bounds.height > 0,
+      `SpatialIndex bounds width and height must be positive, got { width: ${bounds.width}, height: ${bounds.height} }`,
     )
     const next: IndexBounds = {
       x: bounds.x,
@@ -307,7 +328,21 @@ export class SpatialIndex<Id> {
   }
 
   private notify(change: SpatialIndexChange<Id>): void {
-    for (const listener of this.listeners) listener(change)
+    for (const listener of this.listeners) {
+      // CAUTION 索引簿记在 notify 前已经提交。一个 listener 抛错若中断 fan-out，
+      // 后续窗口化/DotLayer 会漏掉本次变更；相同 bounds 的重试又会被 set 去重，
+      // 造成持久 stale。逐 listener 隔离，错误仅走实例级可恢复出口。
+      try {
+        listener(change)
+      } catch (error) {
+        reportRecoverableError(this.onError, error, {
+          source: 'spatial-index-listener',
+          operation:
+            change.newBounds === null ? 'delete' : change.oldBounds === null ? 'insert' : 'update',
+          context: change.id,
+        })
+      }
+    }
   }
 
   private addToCells(entry: Entry<Id>): void {

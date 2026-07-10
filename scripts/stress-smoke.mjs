@@ -14,11 +14,12 @@
  * 5. 收集控制台错误，任何 pageerror 都判失败。
  */
 import { chromium } from 'playwright-core'
+import { resolveChromePath } from './chrome-path.mjs'
 
 const url = process.env.STRESS_URL ?? 'http://localhost:5199/stress.html?n=10000'
 
 const browser = await chromium.launch({
-  executablePath: '/usr/local/bin/google-chrome',
+  executablePath: resolveChromePath(),
   headless: true,
   args: ['--no-sandbox', '--disable-gpu'],
 })
@@ -57,7 +58,8 @@ const full = await debug()
 console.log('[smoke] zoom 100%:', JSON.stringify(full))
 if (full.lod !== 'full') throw new Error(`expected full lod, got ${full.lod}`)
 if (full.mountedCards <= 0) throw new Error('full 档应有挂载卡片')
-if (full.pending.cards !== 0) throw new Error(`mount queue should settle, got ${full.pending.cards}`)
+if (full.pending.cards !== 0)
+  throw new Error(`mount queue should settle, got ${full.pending.cards}`)
 if (full.nodes >= 5000) throw new Error(`node budget exceeded: ${full.nodes}`)
 
 // 程序化移动一张未挂载卡片（陈旧底衬回归用例的入口按钮）：

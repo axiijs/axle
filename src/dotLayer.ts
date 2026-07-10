@@ -1,5 +1,7 @@
 import { UI, UIData, dataProcessor } from 'leafer-ui'
 import type { ILeaferCanvas, IRenderOptions, IUIData } from 'leafer-ui'
+import type { AxleErrorHandler } from './diagnostics.js'
+import { reportRecoverableError } from './diagnostics.js'
 import type { IndexBounds, SpatialIndex } from './spatialIndex.js'
 import { boundsIntersect } from './spatialIndex.js'
 
@@ -43,6 +45,8 @@ export type DotLayerOptions<Id> = {
   aggregateColor?: (count: number) => string
   /** 帧调度器（失效合并用），默认 requestAnimationFrame */
   schedule?: (callback: () => void) => () => void
+  /** 可恢复错误出口；可直接传 `root.reportError` */
+  onError?: AxleErrorHandler
 }
 
 const DEFAULT_COLOR = '#5b6472'
@@ -169,7 +173,7 @@ export class DotLayer<Id> {
   /** 把与 pending 相交的脏区全部吸收进并集（swap-pop 摘除），返回最终并集 */
   private absorbIntersecting(pending: IndexBounds): IndexBounds {
     const rects = this.dirtyRects
-    for (let i = 0; i < rects.length; ) {
+    for (let i = 0; i < rects.length;) {
       if (boundsIntersect(rects[i]!, pending)) {
         pending = unionBounds(rects[i]!, pending)
         rects[i] = rects[rects.length - 1]!
@@ -232,7 +236,17 @@ export class DotLayer<Id> {
         this.options.aggregateColor ??
         ((count: number) => `rgba(122, 162, 255, ${Math.min(0.85, 0.18 + count * 0.04)})`)
       index.forEachCell(drawRect, (cellBounds, count) => {
-        const fill = aggregateColor(count)
+        let fill: string
+        try {
+          fill = aggregateColor(count)
+        } catch (error) {
+          reportRecoverableError(this.options.onError, error, {
+            source: 'dot-layer-aggregate-color',
+            operation: 'draw',
+            context: count,
+          })
+          return
+        }
         if (fill !== lastFill) {
           ctx.fillStyle = fill
           lastFill = fill
@@ -243,7 +257,17 @@ export class DotLayer<Id> {
     }
 
     index.forEachIn(drawRect, (id, bounds) => {
-      const fill = typeof color === 'function' ? color(id, bounds) : color
+      let fill: string | null | undefined
+      try {
+        fill = typeof color === 'function' ? color(id, bounds) : color
+      } catch (error) {
+        reportRecoverableError(this.options.onError, error, {
+          source: 'dot-layer-color',
+          operation: 'draw',
+          context: id,
+        })
+        return
+      }
       if (!fill) return
       const width = bounds.width - inset * 2
       const height = bounds.height - inset * 2

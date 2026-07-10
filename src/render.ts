@@ -1,4 +1,5 @@
 import type { IUI } from 'leafer-ui'
+import type { AxleErrorHandler, AxleErrorInfo } from './diagnostics.js'
 import type { Host, PathContext } from './Host.js'
 import { createHost } from './createHost.js'
 import { createPlaceholder, destroyNode, isAttachedTo } from './leafer.js'
@@ -15,15 +16,30 @@ type AttachEntry = {
   cancelled: boolean
 }
 
+export type CreateRootOptions = {
+  /**
+   * 覆盖当前 root 的 RxList 不变量诊断开关。省略时沿用
+   * `setListDiagnostics()` 设置的进程级默认值。
+   */
+  listDiagnostics?: boolean
+}
+
 export type Root = {
   container: IUI
   host: Host | undefined
   attached: boolean
+  /** 当前 root 的列表诊断覆盖；undefined 表示使用全局默认值 */
+  listDiagnostics: boolean | undefined
   render: (node: unknown) => Host
   destroy: () => void
   on: (event: string, callback: EventCallback, options?: EventOptions) => () => void
   /** 返回是否有监听器消费了该事件 */
   dispatch: (event: string, arg?: unknown) => boolean
+  /**
+   * 异步/已提交链路的统一可恢复错误出口，可直接传给性能模块的 `onError`。
+   * 注册了 error 监听器时交给监听器，否则写 console；本函数永不抛出。
+   */
+  reportError: AxleErrorHandler
   /**
    * 注册一个「子树连通到 container 后执行」的回调（组件在脱离场景图的子树里
    * 渲染时，layoutEffect / 组件 ref 延迟到连通后执行）。返回取消函数
@@ -41,7 +57,7 @@ export type Root = {
  * 在一个 Leafer branch（Leafer / App / Group / Frame / Box）上创建渲染根。
  * axle 不接管 Leafer 实例的创建与渲染循环，容器由使用者持有。
  */
-export function createRoot(container: IUI): Root {
+export function createRoot(container: IUI, options?: CreateRootOptions): Root {
   assert(
     container.isBranch,
     'createRoot container must be a leafer branch (Leafer/Group/Frame/Box)',
@@ -53,6 +69,7 @@ export function createRoot(container: IUI): Root {
     container,
     host: undefined,
     attached: false,
+    listDiagnostics: options?.listDiagnostics,
     render(node: unknown) {
       // render 不可重入，否则会往容器里追加多棵树
       assert(!root.host, 'root can only render once, destroy the root before rendering again')
@@ -147,6 +164,17 @@ export function createRoot(container: IUI): Root {
       })
       if (hasError) throw firstError
       return true
+    },
+    reportError(error: unknown, info: AxleErrorInfo) {
+      // dispatch('error') 已逐 listener 隔离，正常不会抛；这里仍加防御兜底，
+      // 保证作为性能模块 onError 使用时绝不击穿 rAF / write-through 链。
+      try {
+        if (root.dispatch('error', error)) return
+      } catch (dispatchError) {
+        console.error('[axle] root error dispatch failed, ignoring:', dispatchError)
+      }
+      const operation = info.operation ? ` (${info.operation})` : ''
+      console.error(`[axle] ${info.source}${operation} failed, skipping:`, error)
     },
     deferAttached(host, run) {
       const entry: AttachEntry = { host, run, cancelled: false }

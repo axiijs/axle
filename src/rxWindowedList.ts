@@ -1,4 +1,6 @@
 import { autorun, RxList } from 'data0'
+import type { AxleErrorHandler } from './diagnostics.js'
+import { reportRecoverableError } from './diagnostics.js'
 import type { IndexBounds, SpatialIndex } from './spatialIndex.js'
 import { boundsIntersect } from './spatialIndex.js'
 
@@ -72,6 +74,8 @@ export type RxWindowedListOptions<T, Id, L extends string> = {
   schedule?: ((callback: () => void) => () => void) | undefined
   /** 时钟，默认 performance.now */
   now?: (() => number) | undefined
+  /** 可恢复错误出口；可直接传 `root.reportError` */
+  onError?: AxleErrorHandler | undefined
 }
 
 type MountTask<Id, L> = { id: Id; lod: L; distance: number }
@@ -228,15 +232,31 @@ export class RxWindowedList<T, Id, L extends string = string> {
         this.pendingChangedIds.clear()
       }
       this.drain()
+    } catch (error) {
+      // flush 默认运行在 rAF。异常从这里冒出只会成为 pageerror，调用方无法
+      // 可靠恢复；报告后由 finally 根据剩余任务继续调度。resolve 有更精确的
+      // source，已在 build/apply 内消费，这里兜底响应式 getter 等其它帧错误。
+      reportRecoverableError(this.options.onError, error, {
+        source: 'windowed-list-frame',
+        operation: 'flush',
+      })
     } finally {
-      // CAUTION 放在 finally：drain 抛错（如 resolve 抛错）时也要续调度，
-      //  失败任务已出队（放弃执行），其余排队任务在后续帧继续消化，
-      //  否则一次异常会让队列停摆到下一个触发源事件。
-      if (
-        !this.destroyed &&
-        (this.recomputeNeeded || this.pendingChangedIds.size || this.actionableCount() > 0)
-      ) {
-        this.scheduleFrame()
+      // CAUTION 放在 finally：响应式 getter / 内部结构操作发生异常时也要
+      // 续调度，已出队的失败任务放弃执行，其余任务在后续帧继续消化。
+      if (!this.destroyed) {
+        let shouldSchedule = false
+        try {
+          shouldSchedule =
+            !!(this.recomputeNeeded || this.pendingChangedIds.size) || this.actionableCount() > 0
+        } catch (error) {
+          // actionableCount 会读取用户提供的 interacting getter；finally 中的
+          // 二次异常不能覆盖原错误或重新变成 pageerror。
+          reportRecoverableError(this.options.onError, error, {
+            source: 'windowed-list-frame',
+            operation: 'schedule-next-frame',
+          })
+        }
+        if (shouldSchedule) this.scheduleFrame()
       }
     }
   }
@@ -539,16 +559,15 @@ export class RxWindowedList<T, Id, L extends string = string> {
               const task = this.pendingMounts[this.mountCursor++]!
               if (!this.queuedMountIds.delete(task.id)) continue // 已撤销
               const row = this.buildMountRow(task.id, task.lod)
-              // 已失效的任务（挂载前复核未通过）与被撤销的任务一样不占预算，
-              // 避免一帧的结构操作配额被废任务耗光而没有做任何实际挂载
+              // 已失效或 resolve 失败的任务与被撤销的任务一样不占预算，
+              // 避免一帧的结构操作配额被废任务耗光而没有做任何实际挂载。
               if (!row) continue
               rows.push(row)
               ops++
             }
           } finally {
-            // CAUTION 放在 finally：批内某个 resolve 抛错时，已构建的行仍然提交，
-            //  簿记（rowIds/mounted/mountedIdSet 与 rows）保持一致；
-            //  失败任务已出队（放弃挂载），错误向上抛给帧调度器保持可观测。
+            // buildMountRow 已隔离用户 resolve；若其它内部错误仍然发生，批内
+            // 已构建行也必须提交，保持 rows 与 mounted/rowIds 一致。
             if (rows.length) this.commitMountRows(rows)
           }
         }
@@ -580,7 +599,16 @@ export class RxWindowedList<T, Id, L extends string = string> {
     // 队列构建后索引可能又变（同帧内先删后挂），挂载前再确认一次
     if (!this.options.index.has(id) && !this.pinnedSet.has(id)) return null
     if (this.mounted.has(id)) return null
-    return { id, item: this.options.resolve(id), lod }
+    try {
+      return { id, item: this.options.resolve(id), lod }
+    } catch (error) {
+      reportRecoverableError(this.options.onError, error, {
+        source: 'windowed-list-resolve',
+        operation: 'mount',
+        context: id,
+      })
+      return null
+    }
   }
 
   /** 把一批行以单次 splice append 到列表尾部（含全部簿记） */
@@ -617,7 +645,18 @@ export class RxWindowedList<T, Id, L extends string = string> {
   private applyReplace(id: Id, lod: L): void {
     const index = this.rowIndexOf(id)
     if (index < 0) return
-    const row: WindowedRow<T, Id, L> = { id, item: this.options.resolve(id), lod }
+    let item: T
+    try {
+      item = this.options.resolve(id)
+    } catch (error) {
+      reportRecoverableError(this.options.onError, error, {
+        source: 'windowed-list-resolve',
+        operation: 'replace',
+        context: id,
+      })
+      return
+    }
+    const row: WindowedRow<T, Id, L> = { id, item, lod }
     this.rows.splice(index, 1, row)
     this.rowIndexHint.set(id, index)
     this.mounted.set(id, lod)

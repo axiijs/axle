@@ -23,10 +23,60 @@ function rowTexts(container: IUI): string[] {
 }
 
 describe('开发期列表不变量自检（setListDiagnostics）', () => {
+  it('supports per-root diagnostics overrides without cross-root state leakage', () => {
+    setListDiagnostics(true)
+    const enabledContainer = new Group() as unknown as IUI
+    const disabledContainer = new Group() as unknown as IUI
+    const enabledRoot = createRoot(enabledContainer, { listDiagnostics: true })
+    const disabledRoot = createRoot(disabledContainer, { listDiagnostics: false })
+    const enabledList = new RxList([1, 2])
+    const disabledList = new RxList([1, 2])
+    const enabledErrors: unknown[] = []
+    const disabledErrors: unknown[] = []
+    enabledRoot.on('error', (error) => enabledErrors.push(error))
+    disabledRoot.on('error', (error) => disabledErrors.push(error))
+    enabledRoot.render(
+      <group>
+        {enabledList.map((value) => (
+          <text>{() => String(value)}</text>
+        ))}
+      </group>,
+    )
+    disabledRoot.render(
+      <group>
+        {disabledList.map((value) => (
+          <text>{() => String(value)}</text>
+        ))}
+      </group>,
+    )
+
+    const stealFirstRow = (container: IUI) => {
+      const branch = container.children![0] as IUI
+      ;(branch.children!.find((child) => (child as IUI).tag === 'Text') as IUI).remove()
+    }
+    stealFirstRow(enabledContainer)
+    stealFirstRow(disabledContainer)
+    enabledList.push(3)
+    disabledList.push(3)
+
+    expect(enabledErrors).toHaveLength(1)
+    expect(rowTexts(enabledContainer)).toEqual(['1', '2', '3'])
+    expect(disabledErrors).toHaveLength(0)
+    expect(rowTexts(disabledContainer)).toEqual(['2', '3'])
+    enabledRoot.destroy()
+    disabledRoot.destroy()
+  })
+
   it('契约外用法弄失步后，下一个 patch 批次即暴露并自愈', () => {
     setListDiagnostics(true)
     const list = new RxList<number>([1, 2, 3])
-    const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)
+    const { container, root } = mount(
+      <group>
+        {list.map((v) => (
+          <text>{() => String(v)}</text>
+        ))}
+      </group>,
+    )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
     expect(rowTexts(container)).toEqual(['1', '2', '3'])
@@ -47,7 +97,13 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
   it('顺序级失步（无 zIndex 分支）也在下一个 patch 批次暴露并自愈', () => {
     setListDiagnostics(true)
     const list = new RxList<number>([1, 2, 3])
-    const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)
+    const { container, root } = mount(
+      <group>
+        {list.map((v) => (
+          <text>{() => String(v)}</text>
+        ))}
+      </group>,
+    )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
 
@@ -69,7 +125,11 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     const list = new RxList<number>([1, 2, 3])
     const { container, root } = mount(
       // zIndex 倒序：leafer 会对 children 物理重排，物理顺序与簿记顺序不一致是契约内行为
-      <group>{list.map((v) => <text zIndex={10 - v}>{() => String(v)}</text>)}</group>,
+      <group>
+        {list.map((v) => (
+          <text zIndex={10 - v}>{() => String(v)}</text>
+        ))}
+      </group>,
     )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
@@ -88,7 +148,11 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     setListDiagnostics(true)
     const list = new RxList<number>([3, 1, 2])
     const { container, root } = mount(
-      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+      <group>
+        {list.map((v) => (
+          <text zIndex={v}>{() => String(v)}</text>
+        ))}
+      </group>,
     )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
@@ -107,7 +171,11 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     setListDiagnostics(true)
     const list = new RxList<number>([2, 1])
     const { container, root } = mount(
-      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+      <group>
+        {list.map((v) => (
+          <text zIndex={v}>{() => String(v)}</text>
+        ))}
+      </group>,
     )
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
@@ -125,7 +193,11 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
     setListDiagnostics(true)
     const list = new RxList<number>([3, 1, 2])
     const { container, root } = mount(
-      <group>{list.map((v) => <text>{() => String(v)}</text>)}</group>,
+      <group>
+        {list.map((v) => (
+          <text>{() => String(v)}</text>
+        ))}
+      </group>,
     )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
@@ -138,7 +210,11 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
   it('未开启诊断时 zIndex × reorder 不报告（生产路径行为不变）', () => {
     const list = new RxList<number>([3, 1, 2])
     const { container, root } = mount(
-      <group>{list.map((v) => <text zIndex={v}>{() => String(v)}</text>)}</group>,
+      <group>
+        {list.map((v) => (
+          <text zIndex={v}>{() => String(v)}</text>
+        ))}
+      </group>,
     )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
@@ -150,7 +226,13 @@ describe('开发期列表不变量自检（setListDiagnostics）', () => {
 
   it('未开启时不做自检（失步静默保留，行为与旧版一致）', () => {
     const list = new RxList<number>([1, 2])
-    const { container, root } = mount(<group>{list.map((v) => <text>{() => String(v)}</text>)}</group>)
+    const { container, root } = mount(
+      <group>
+        {list.map((v) => (
+          <text>{() => String(v)}</text>
+        ))}
+      </group>,
+    )
     const errors: unknown[] = []
     root.on('error', (e) => errors.push(e))
     const branch = container.children![0] as IUI

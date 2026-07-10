@@ -195,6 +195,11 @@ interface Host {
 直接订阅 `RxList` 的 patch（`computed` + `manualTrack(METHOD /
 EXPLICIT_KEY_CHANGE)`），用普通数组维护行 Host：
 
+- **开发期不变量诊断可按 root 覆盖**：`setListDiagnostics(enabled)` 设置
+  进程级默认值；`createRoot(container, { listDiagnostics })` 只覆盖该 root，
+  多画布应用和并行测试不必共享开关。生产默认关闭，patch 热路径只多一次
+  nullish 判断；开启后每批 patch 校验簿记、节点集合与无 zIndex 分支的物理顺序。
+
 - **splice**：新行创建 Host 后插入到「插入点之后第一个已渲染行的 firstNode」之前
   （找不到则 list 占位符之前）；被删行逐个 destroy。**start 参数按
   `Array.prototype.splice` 的 ToIntegerOrInfinity + clamp 语义完整归一化**：data0
@@ -302,7 +307,9 @@ context / 诊断）。
 
 ```ts
 const leafer = new Leafer({ view, width, height })   // 用户自己创建
-const root = createRoot(leafer)                       // 任何 branch（Leafer/Group/Frame）都可以
+const root = createRoot(leafer, {
+  listDiagnostics: import.meta.env.DEV,               // 可选：该 root 的列表不变量诊断
+})                                                     // 任何 branch（Leafer/Group/Frame）都可以
 root.render(<App />)
 root.destroy()
 ```
@@ -310,6 +317,9 @@ root.destroy()
 - `render` 不可重入（再次 render 前必须 destroy），返回根 Host。
 - root 自带一个事件总线：`on(event, cb, { once? })` / `dispatch(event, arg?)`。
   `render` 完成后 dispatch `attach`；`destroy` 前 dispatch `detach`。
+- `root.reportError(error, info)` 是异步/已提交链路的可恢复错误出口，可直接传给
+  `SpatialIndex` / `RxWindowedList` / `DotLayer` / shared ticker 的 `onError`；
+  有 `error` listener 时派发原始 error，否则写 `console.error`，且本函数永不抛出。
 - **非 error 事件的监听器彼此隔离**（与 `flushAttachQueue` 的连坐语义对齐）：
   attach 派发的是同批组件的 layoutEffect / ref（无钩子降级模式会向上抛），
   第一个抛错的监听器不允许吞掉同批兄弟的执行——once 监听器已注销、attach

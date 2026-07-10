@@ -241,8 +241,9 @@ Phase 1/2 的架构已经把响应式层做到了正确的形状（见
   内存成本白付，屏外卡片根本不动），或用一个覆盖全部 atom 的 computed
   （任何一张卡动了整体重算）。
 - 索引是纯数据层对象，不参与渲染，不在任何交互热路径上做全量重建。
-- **bounds 必须落在设计包络内（写入口断言）**：`set` 对四个字段做
-  `Number.isFinite` 检查，并断言两条网格包络——单条目覆盖的 cell 数
+- **bounds 必须落在设计包络内（写入口断言）**：构造参数 `cellSize` 必须是
+  有限正数；`set` 对四个字段做 `Number.isFinite` 检查，要求
+  `width/height > 0`，并断言两条网格包络——单条目覆盖的 cell 数
   ≤ 2^16（有限但巨大的尺寸同样会让 cell 循环失控：width 1e6 时一次 set
   就是数百万次 Map 操作，1e8 直接挂死，仅 isFinite 防不住）；cell 坐标
   在 ±2^25 编码域内（越界后 cellKey 运算超出 2^53，keyToCx/keyToCy
@@ -250,6 +251,9 @@ Phase 1/2 的架构已经把响应式层做到了正确的形状（见
   静默错误）。NaN 会让条目落进 NaN cell、对所有查询永久不可见（卡片
   静默消失且事故点与症状点相隔甚远）。write-through 是唯一写入口，
   事故必须暴露在写入点；断言先于一切簿记写入，失败不留半写入状态。
+- **变更通知逐订阅者隔离**：索引已经提交后才同步 fan-out；一个 listener
+  抛错不能连坐窗口化或 DotLayer，且相同 bounds 的重试会被去重、无法补发。
+  可恢复错误通过实例 `onError` 报告；未提供时写 `console.error`。
 - **查询成本与查询矩形面积解耦**：`forEachIn` / `forEachCell` 先把 cell
   循环 clamp 进「已占用 cell 包围盒」（grow-only 增量维护），并在查询范围
   覆盖的 cell 数超过实际占用数时回退为遍历占用 cell 表按范围过滤——成本
@@ -323,6 +327,10 @@ const windowed = rxWindowedList(cards, {
   形态**：dot 档下行列表清空，但 pinned 行以 `simple` 形态保活（正在拖拽
   的行保持进入 dot 档前的形态直到手势结束）；此时卡片屏幕尺寸只有几个
   像素，选中反馈退化为底衬色块高亮，不再渲染选中框。
+- **帧错误不允许成为 pageerror**：`resolve(id)` 失败时只放弃该挂载/替换
+  任务（替换保留旧行），同批其它任务继续；viewRect/pin 等帧 getter 的异常
+  同样在 `flush` 边界隔离。错误通过实例 `onError` 报告，推荐传
+  `root.reportError`；未提供时写 `console.error`。
 
 ### 2.3 z-order 契约
 

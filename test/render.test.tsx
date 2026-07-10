@@ -70,6 +70,34 @@ describe('createRoot', () => {
 })
 
 describe('root events', () => {
+  it('bridges recoverable module errors to root error listeners with console fallback', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const errors: unknown[] = []
+    root.on('error', (error) => errors.push(error))
+    const error = new Error('recoverable')
+    expect(() =>
+      root.reportError(error, {
+        source: 'shared-ticker-callback',
+        operation: 'tick',
+      }),
+    ).not.toThrow()
+    expect(errors).toEqual([error])
+
+    root.destroy()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      root.reportError(error, {
+        source: 'windowed-list-frame',
+        operation: 'flush',
+      })
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(String(consoleError.mock.calls[0]![0])).toContain('windowed-list-frame')
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
   it('dispatches attach on render and detach on destroy', () => {
     const container = new Group()
     const root = createRoot(container as never)

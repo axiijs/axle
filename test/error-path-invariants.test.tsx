@@ -206,9 +206,9 @@ describe('初次渲染失败后的场景图清洁（无孤儿占位符）', () =
   it('根级静态数组含非法 item（无钩子）→ root.destroy() 后容器为空（无孤儿 itemPlaceholder）', () => {
     const container = new Group() as unknown as IUI
     const root = createRoot(container)
-    expect(() =>
-      root.render([<rect width={1} />, { bad: true }, <rect width={3} />]),
-    ).toThrow('unknown child type')
+    expect(() => root.render([<rect width={1} />, { bad: true }, <rect width={3} />])).toThrow(
+      'unknown child type',
+    )
     root.destroy()
     expect(container.children ?? []).toEqual([])
   })

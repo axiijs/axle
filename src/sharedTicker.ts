@@ -7,6 +7,9 @@
  * - `paused` 可整体暂停（交互中降级：视口手势期间暂停视频帧绘制）。
  */
 
+import type { AxleErrorHandler } from './diagnostics.js'
+import { reportRecoverableError } from './diagnostics.js'
+
 export type SharedTicker = {
   /** 注册一个每帧回调，返回退订函数 */
   add: (callback: (now: number) => void) => () => void
@@ -17,13 +20,17 @@ export type SharedTicker = {
   destroy: () => void
 }
 
-export function createSharedTicker(options?: {
+export type SharedTickerOptions = {
   /** 帧率上限，默认不限（跟随 rAF） */
   fps?: number
   /** 帧调度器，默认 requestAnimationFrame */
   schedule?: (callback: (now: number) => void) => () => void
   now?: () => number
-}): SharedTicker {
+  /** 可恢复错误出口；可直接传 `root.reportError` */
+  onError?: AxleErrorHandler
+}
+
+export function createSharedTicker(options?: SharedTickerOptions): SharedTicker {
   const schedule =
     options?.schedule ??
     ((callback: (now: number) => void) => {
@@ -92,7 +99,10 @@ export function createSharedTicker(options?: {
           try {
             callback(time)
           } catch (error) {
-            console.error('[axle] shared ticker callback failed:', error)
+            reportRecoverableError(options?.onError, error, {
+              source: 'shared-ticker-callback',
+              operation: 'tick',
+            })
           }
         }
       }
