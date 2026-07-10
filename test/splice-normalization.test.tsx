@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RxList } from 'data0'
 import { setListDiagnostics } from '@axiijs/axle'
+import { SPLICE_SPREAD_LIMIT, spliceArraySafe } from '../src/util.js'
 import { mount, texts } from './helpers.js'
 
 /**
@@ -136,5 +137,79 @@ describe('set key 归一化（小数 / 非有限值 / 字符串）', () => {
     expect(texts(container)).toEqual(['a', 'b'])
     items.set(-0, 'A') // data[-0] === data[0]
     expect(texts(container)).toEqual(['A', 'b'])
+  })
+})
+
+describe('spliceArraySafe（单 patch 超大批量新行避开 call-spread 上限）', () => {
+  it('阈值内走原生 splice：删除项与就地变更语义与 Array#splice 一致', () => {
+    const target = ['a', 'b', 'c', 'd', 'e']
+    const removed = spliceArraySafe(target, 1, 2, ['x', 'y', 'z'])
+    expect(removed).toEqual(['b', 'c'])
+    expect(target).toEqual(['a', 'x', 'y', 'z', 'd', 'e'])
+  })
+
+  it('超过阈值走手工搬移：结果与 Array#splice 语义逐项一致（含删除项与尾段次序）', () => {
+    const items = Array.from({ length: SPLICE_SPREAD_LIMIT + 7 }, (_, i) => `n${i}`)
+    const target = ['a', 'b', 'c', 'd']
+    const reference = ['a', 'b', 'c', 'd']
+    const removed = spliceArraySafe(target, 1, 2, items)
+    const referenceRemoved = reference.splice(1, 2, ...items) // 参考实现（此规模 spread 仍安全）
+    expect(removed).toEqual(referenceRemoved)
+    expect(target).toEqual(reference)
+  })
+
+  it('十万级插入（原生 call-spread 必然 RangeError 的规模）不受实参上限约束', () => {
+    // V8 的 call 实参上限在 12 万与 20 万之间；20 万足以证明手工搬移路径
+    // 覆盖了原生 `target.splice(start, del, ...items)` 无法到达的规模
+    const items = Array.from({ length: 200_000 }, (_, i) => i)
+    const target: number[] = [-1, -2]
+    const removed = spliceArraySafe(target, 1, 1, items)
+    expect(removed).toEqual([-2])
+    expect(target.length).toBe(200_001)
+    expect(target[0]).toBe(-1)
+    expect(target[1]).toBe(0)
+    expect(target[200_000]).toBe(199_999)
+  })
+
+  it('超过阈值的纯插入（deleteCount 0）与尾部追加同样一致', () => {
+    const items = Array.from({ length: SPLICE_SPREAD_LIMIT + 1 }, (_, i) => i)
+    const insertTarget = [100, 200]
+    const insertReference = [100, 200]
+    spliceArraySafe(insertTarget, 1, 0, items)
+    insertReference.splice(1, 0, ...items)
+    expect(insertTarget).toEqual(insertReference)
+
+    const appendTarget = [1]
+    const appendReference = [1]
+    spliceArraySafe(appendTarget, 1, 0, items)
+    appendReference.splice(1, 0, ...items)
+    expect(appendTarget).toEqual(appendReference)
+  })
+
+  it('列表单 patch 插入超过阈值的新行：直接渲染成功，不触发 rebuild 兜底', () => {
+    const count = SPLICE_SPREAD_LIMIT + 50
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { items, container, root } = setupDirect(['tail'])
+      items.splice(0, 0, ...Array.from({ length: count }, (_, i) => `r${i}`))
+
+      // 修复前：hosts.splice 的 call-spread 在十万级会 RangeError → applyPatch
+      // 兜底 console.error + rebuildAllRows 白建一遍。现在增量路径直接走通。
+      expect(consoleError).not.toHaveBeenCalled()
+      expect(items.data.length).toBe(count + 1)
+      const rendered = texts(container)
+      expect(rendered.length).toBe(count + 1)
+      expect(rendered[0]).toBe('r0')
+      expect(rendered[count - 1]).toBe(`r${count - 1}`)
+      expect(rendered[count]).toBe('tail')
+
+      // 簿记与场景图未失步：后续增量 patch 照常
+      items.push('z')
+      expect(texts(container).length).toBe(count + 2)
+      root.destroy()
+      expect(container.children ?? []).toEqual([])
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 })

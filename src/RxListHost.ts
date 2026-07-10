@@ -6,7 +6,7 @@ import { linkHost } from './Host.js'
 import { createHost, EmptyHost } from './createHost.js'
 import { createPlaceholder, insertBefore } from './leafer.js'
 import { destroyNode } from './leafer.js'
-import { assert } from './util.js'
+import { assert, spliceArraySafe } from './util.js'
 
 // data0 的 TrackOpTypes / TriggerOpTypes 是 ambient const enum，
 // verbatimModuleSyntax 下不能引用其成员，这里使用字面量值。
@@ -278,7 +278,10 @@ export class RxListHost implements Host {
     // 锚点：被删块之后第一个已渲染行
     const anchor = this.findAnchor(start + deleteCount)
     const newHosts = newItems.map((item) => this.createRowHost(item, anchor))
-    const deletedHosts = hosts.splice(start, deleteCount, ...newHosts)
+    // CAUTION spliceArraySafe：单 patch 十万级新行（大数据集 replaceData）时
+    //  call-spread 的实参展开会 RangeError——虽然会被 applyPatch 兜底捕获并
+    //  rebuildAllRows 自愈，但整个列表要白建一遍。常规规模仍走原生 splice。
+    const deletedHosts = spliceArraySafe(hosts, start, deleteCount, newHosts)
     for (const deleted of deletedHosts) this.destroyRowHost(deleted)
   }
   handleReorder(pairs: [number, number][], reorderInfo?: ReorderInfo): void {

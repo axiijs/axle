@@ -28,6 +28,36 @@ export function runCleanupIsolated(root: Root, cleanup: () => unknown, what: str
   }
 }
 
+/**
+ * `Array#splice` 插入项超过该阈值时改走无 spread 的手工搬移路径。
+ * 取值远低于各引擎的 call 实参上限（最低约 6.5 万），又远高于常规 patch
+ * 的行数（窗口化挂载每批 4 行），两条路径都留足余量。
+ */
+export const SPLICE_SPREAD_LIMIT = 1024
+
+/**
+ * `Array#splice` 的数组参数版。常规规模走原生 splice（引擎快路径、零额外拷贝）；
+ * items 超过阈值时避开 call-spread——`arr.splice(start, del, ...items)` 的实参
+ * 展开受 JS 实参上限约束，单个 RxList patch 携带十万级新行（大数据集
+ * `replaceData`）会直接 RangeError（data0 侧同款问题的先例见其 `spliceArray`）。
+ * 大批量路径的代价是两次尾段搬移，只在超阈值时付费。
+ */
+export function spliceArraySafe<T>(
+  target: T[],
+  start: number,
+  deleteCount: number,
+  items: T[],
+): T[] {
+  if (items.length <= SPLICE_SPREAD_LIMIT) {
+    return target.splice(start, deleteCount, ...items)
+  }
+  const removed = target.splice(start, deleteCount)
+  const tail = target.splice(start, target.length - start)
+  for (let i = 0; i < items.length; i++) target.push(items[i]!)
+  for (let i = 0; i < tail.length; i++) target.push(tail[i]!)
+  return removed
+}
+
 /** 一层浅比较，用于反向同步的写前去抖 */
 export function shallowEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
