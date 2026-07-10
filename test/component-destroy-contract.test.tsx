@@ -3,15 +3,18 @@ import { atom, computed, ManualCleanup, RxList } from 'data0'
 import { Group } from 'leafer-ui'
 import type { IUI } from 'leafer-ui'
 import { createRoot } from '@axiijs/axle'
-import type { Props, RenderContext } from '@axiijs/axle'
+import type { Props, RefObject, RenderContext } from '@axiijs/axle'
 import { contentChildren, mount, tick } from './helpers.js'
 
 /**
  * 组件销毁契约（doc/02 §3.4）：
  *
- * **render 期收集对象（collect frame）的 destroy 也是清理路径**：computed 的
- * onCleanup、RxLeaferState 的 abort 等用户清理代码抛错必须逐个隔离——绝不
- * 中断兄弟清理与剩余销毁流程，绝不从 root.destroy / 列表 splice 向上抛。
+ * 1. **render 期收集对象（collect frame）的 destroy 也是清理路径**：computed 的
+ *    onCleanup、RxLeaferState 的 abort 等用户清理代码抛错必须逐个隔离——绝不
+ *    中断兄弟清理与剩余销毁流程，绝不从 root.destroy / 列表 splice 向上抛。
+ * 2. **销毁时序固定**：layoutEffect 清理 → useEffect 清理 / onCleanup →
+ *    组件 ref detach → frame 销毁 → 子树拆除。清理回调里保证还能读到
+ *    ref.current 与组件内创建的响应式对象（axii I39 同款契约）。
  *
  * 错误路径按 doc/02 §6 反向断言「无残留」：容器必须清空、被销毁子树的绑定
  * effect 不允许泄漏成继续响应数据写入的活效应。
@@ -136,5 +139,121 @@ describe('render 期收集对象（frame）清理错误隔离', () => {
     expect(contentChildren(branch).length).toBe(2)
     root.destroy()
     expect(container.children!.length).toBe(0)
+  })
+})
+
+describe('销毁时序：清理回调先于一切拆除（axii I39 契约）', () => {
+  it('onCleanup / useEffect 清理 / layoutEffect 清理里 ref.current 可用且节点未销毁', () => {
+    type Snapshot = { current: IUI | null; destroyed: boolean | undefined }
+    const observed: Record<string, Snapshot> = {}
+    let captured: RefObject<IUI> | undefined
+
+    function App(
+      _props: Props,
+      { onCleanup, useEffect, useLayoutEffect, createRef }: RenderContext,
+    ) {
+      const ref = createRef<IUI>()
+      captured = ref
+      const snapshot = (): Snapshot => ({
+        current: ref.current,
+        destroyed: ref.current?.destroyed,
+      })
+      useEffect(() => () => {
+        observed['effectCleanup'] = snapshot()
+      })
+      useLayoutEffect(() => () => {
+        observed['layoutCleanup'] = snapshot()
+      })
+      onCleanup(() => {
+        observed['onCleanup'] = snapshot()
+      })
+      return <rect ref={ref} width={10} height={10} />
+    }
+
+    const { container, root } = mount(<App />)
+    const rect = contentChildren(container)[0]!
+
+    root.destroy()
+    for (const key of ['layoutCleanup', 'effectCleanup', 'onCleanup']) {
+      expect(observed[key], key).toBeDefined()
+      expect(observed[key]!.current, key).toBe(rect)
+      // 未销毁的 leafer 节点 destroyed 是 undefined，销毁后才是 true
+      expect(observed[key]!.destroyed, key).toBeFalsy()
+    }
+    // 清理跑完后终态不变：元素 ref 置 null、场景图清空
+    expect(captured!.current).toBe(null)
+    expect(container.children!.length).toBe(0)
+  })
+
+  it('顺序固定：layoutEffect 清理 → onCleanup → 组件 ref detach → frame 销毁 → 子树拆除', () => {
+    const order: string[] = []
+    class FrameProbe extends ManualCleanup {
+      destroyed = false
+      destroy(): void {
+        super.destroy()
+        this.destroyed = true
+        order.push('frame destroy')
+      }
+    }
+    let probe: FrameProbe | undefined
+
+    function App(_props: Props, { onCleanup, useLayoutEffect }: RenderContext) {
+      probe = new FrameProbe()
+      useLayoutEffect(() => () => order.push('layoutEffect cleanup'))
+      onCleanup(() => order.push(`onCleanup (frame destroyed: ${probe!.destroyed})`))
+      return (
+        <rect
+          width={10}
+          height={10}
+          ref={(value: IUI | null) => {
+            if (value === null) order.push('subtree teardown (element ref detach)')
+          }}
+        />
+      )
+    }
+
+    const { root } = mount(
+      <App
+        ref={(value: unknown) => {
+          if (value === null) order.push('component ref detach')
+        }}
+      />,
+    )
+    root.destroy()
+    expect(order).toEqual([
+      'layoutEffect cleanup',
+      'onCleanup (frame destroyed: false)',
+      'component ref detach',
+      'frame destroy',
+      'subtree teardown (element ref detach)',
+    ])
+  })
+
+  it('列表行卸载走同一时序：行组件的 onCleanup 里元素 ref 仍可用', () => {
+    const seen: Array<{ current: IUI | null; destroyed: boolean | undefined }> = []
+    function Row(_props: Props, { onCleanup, createRef }: RenderContext) {
+      const ref = createRef<IUI>()
+      onCleanup(() => seen.push({ current: ref.current, destroyed: ref.current?.destroyed }))
+      return <rect ref={ref} width={10} height={10} />
+    }
+    const list = new RxList<number>([1])
+    const { container, root } = mount(
+      <group>
+        {list.map(() => (
+          <Row />
+        ))}
+      </group>,
+    )
+    const branch = contentChildren(container)[0]!
+    const rect = contentChildren(branch)[0]!
+
+    list.splice(0, 1)
+    expect(seen.length).toBe(1)
+    expect(seen[0]!.current).toBe(rect)
+    // 未销毁的 leafer 节点 destroyed 是 undefined，销毁后才是 true
+    expect(seen[0]!.destroyed).toBeFalsy()
+    // 行销毁完成后节点已从场景图移除
+    expect(contentChildren(branch).length).toBe(0)
+    root.destroy()
   })
 })

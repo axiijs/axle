@@ -293,6 +293,18 @@ type RenderContext = {
     `rebuildAllRows`，并中断兄弟清理造成泄漏；且销毁没有可回滚的「事务」。
     ref detach 抛错尤其危险：它在列表 splice 的行销毁路径上，中断销毁会让被摘出
     簿记的行成为永久孤儿（RxListHost 另有行级隔离 + 节点兜底清理，见 3.3）。
+  - **render 期间收集的对象（collect frame）的 destroy 也是清理路径**：frame 里的
+    computed / `RxLeaferState` 等的 destroy 会执行用户清理代码（computed 的
+    `onCleanup`、`RxLeaferState` 子类的 abort），必须**逐个隔离**——一个抛错的
+    destroy 若中断遍历，子树拆除与 attach 队列退订全部被跳过，绑定 effect 泄漏成
+    继续响应数据更新的「活孤儿」；`root.destroy()` 更会把异常抛回调用方，留下
+    没有任何恢复手段的半销毁树。
+- **组件销毁时序**：用户清理回调先于一切拆除执行——顺序固定为
+  **layoutEffect 清理 → `useEffect` 清理 / `onCleanup` → 组件 ref detach →
+  render 期收集对象（frame）销毁 → 子树拆除**（场景图节点移除、元素 ref detach）。
+  因此清理回调里**保证**还能读到 `ref.current`（`createRef` / 元素 ref）与组件内
+  创建的响应式对象——`onCleanup(() => observer.unobserve(ref.current!))` 这类
+  退订写法是契约内用法，不允许静默失效（axii 的同款契约，倒置顺序曾是移植回归）。
 
 ### 3.5 PathContext
 

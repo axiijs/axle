@@ -45,8 +45,12 @@ npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199
   场景仍是 unhandled rejection——两种形态都不该由业务写入点承担框架内部错误），
   一律降级为 `console.error` + 跳过；
 - **生命周期回调也在契约内**：effect/layoutEffect/**ref attach** 抛错走钩子（兄弟回调
-  照常执行、已渲染区域不回滚）；**清理回调**（onCleanup/effect 清理/**ref detach** 等）
-  抛错绝不向上抛（`runCleanupIsolated`，单行清理错误不允许升级成整列表 rebuild）；
+  照常执行、已渲染区域不回滚）；**清理回调**（onCleanup/effect 清理/**ref detach**/
+  **render 期收集对象（frame）的 destroy**——computed 的 onCleanup、RxLeaferState 的
+  abort 都是用户代码）抛错绝不向上抛（`runCleanupIsolated` 逐个隔离，单个清理错误
+  不允许升级成整列表 rebuild 或击穿 `root.destroy`）；**组件销毁时序固定**：
+  layoutEffect 清理 → onCleanup → 组件 ref detach → frame 销毁 → 子树拆除，
+  清理回调里保证能读到 `ref.current` 与组件内创建的响应式对象（doc/02 §3.4）；
   列表**行销毁**整体隔离（`RxListHost.destroyRowHost`：销毁抛错报告 + 节点兜底清理，
   被 splice 摘出簿记的行绝不允许泄漏成孤儿）；**error 钩子自身抛错**由 dispatch 就地隔离
   （冒出去会同步抛回业务写入点并跳过同批剩余 patch，见 render.ts 的 CAUTION）；
