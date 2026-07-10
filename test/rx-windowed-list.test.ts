@@ -529,6 +529,44 @@ describe('RxWindowedList: 视口窗口化 (05 号文档 §2.2)', () => {
     windowed.destroy()
   })
 
+  it('incremental churn keeps task queue arrays bounded (长纯增量会话的压实)', () => {
+    const interacting = atom(false)
+    const { index, addCard, scheduler, windowed, mountedIds } = setup({
+      interacting: () => interacting(),
+    })
+    addCard(1, 10, 10)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1])
+
+    interacting(true)
+    addCard(2, 900, 900) // 窗口外
+    scheduler.settle()
+
+    // 手势中一个未挂载条目反复进出窗口（长拖拽的典型形态）：挂载被冻结，
+    // 每轮进出都是「push 挂载任务 + 撤销」——撤销只删集合、数组条目滞留
+    for (let i = 0; i < 500; i++) {
+      index.set(2, { x: 20, y: 20, width: 10, height: 10 })
+      scheduler.frame()
+      index.set(2, { x: 900, y: 900, width: 10, height: 10 })
+      scheduler.frame()
+    }
+    const internals = windowed as unknown as { pendingMounts: unknown[]; mountCursor: number }
+    // 无压实时数组会累积 ~500 条废任务；压实上界是「有效数 ×2 + 64」量级
+    expect(internals.pendingMounts.length - internals.mountCursor).toBeLessThan(150)
+
+    // 压实不破坏语义：最后一轮停在窗口内，任务仍在队列里
+    index.set(2, { x: 20, y: 20, width: 10, height: 10 })
+    scheduler.frame()
+    expect(windowed.pendingCount).toBe(1)
+    expect(mountedIds()).toEqual([1]) // 冻结中仍未挂载
+
+    interacting(false)
+    scheduler.settle()
+    expect(mountedIds()).toEqual([1, 2])
+    expect(windowed.stats.mounts).toBe(2) // 500 轮进出没有产生任何多余挂载
+    windowed.destroy()
+  })
+
   it('incremental judgement keeps pinned entries alive when they move (targetLod pin rules)', () => {
     const pins = atom<number[]>([])
     const { index, addCard, scheduler, windowed, mountedIds } = setup({ pins: () => pins() })

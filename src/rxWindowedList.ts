@@ -82,6 +82,14 @@ type MountTask<Id, L> = { id: Id; lod: L; distance: number }
  */
 const MOUNT_BATCH = 4
 
+/**
+ * 增量修补路径的队列压实阈值（见 applyIncrementalChange）：数组剩余段长
+ * 超过「有效任务数 × 2 + 该常数」时原地压实。斜率 2 保证均摊 O(1)
+ * （每次压实前至少有一半是废任务，每个废任务只对应一次 push），
+ * 常数项避免小队列上的压实churn。
+ */
+const QUEUE_COMPACT_SLACK = 64
+
 const defaultSchedule = (callback: () => void): (() => void) => {
   const handle = requestAnimationFrame(callback)
   return () => cancelAnimationFrame(handle)
@@ -419,6 +427,47 @@ export class RxWindowedList<T, Id, L extends string = string> {
       this.pendingReplaces.push({ id, lod: desired, distance })
       this.queuedReplaceIds.add(id)
     }
+    this.compactQueuesIfStale()
+  }
+
+  /**
+   * 队列数组的滞留上界（增量修补路径的配套簿记）：撤销只删集合、push 只增
+   * 数组，两次全量 recompute 之间的长纯增量会话（手势中冻结挂载 + 条目反复
+   * 进出窗口的长拖拽是典型形态）会让数组无界累积废任务。剩余段长超过
+   * 「有效数 × 2 + 常数」时按集合过滤压实。压实保留每个 id 的**首个**有效
+   * 条目——与出队语义一致（出队按 `queuedIds.delete(id)` 判定，同 id 的
+   * 重复条目本来就是最早的那条生效）。正常路径每次修补只多三次整数比较。
+   */
+  private compactQueuesIfStale(): void {
+    if (
+      this.pendingMounts.length - this.mountCursor >
+      this.queuedMountIds.size * 2 + QUEUE_COMPACT_SLACK
+    ) {
+      this.pendingMounts = compactQueue(this.pendingMounts, this.mountCursor, this.queuedMountIds)
+      this.mountCursor = 0
+    }
+    if (
+      this.pendingReplaces.length - this.replaceCursor >
+      this.queuedReplaceIds.size * 2 + QUEUE_COMPACT_SLACK
+    ) {
+      this.pendingReplaces = compactQueue(
+        this.pendingReplaces,
+        this.replaceCursor,
+        this.queuedReplaceIds,
+      )
+      this.replaceCursor = 0
+    }
+    if (
+      this.pendingUnmounts.length - this.unmountCursor >
+      this.queuedUnmountIds.size * 2 + QUEUE_COMPACT_SLACK
+    ) {
+      this.pendingUnmounts = compactQueue(
+        this.pendingUnmounts,
+        this.unmountCursor,
+        this.queuedUnmountIds,
+      )
+      this.unmountCursor = 0
+    }
   }
 
   private distanceTo(bounds: IndexBounds | undefined): number {
@@ -606,6 +655,26 @@ export function rxWindowedList<T, Id, L extends string = string>(
 
 function toGetter(value: number | (() => number)): () => number {
   return typeof value === 'function' ? value : () => value
+}
+
+/**
+ * 压实一条任务队列：丢弃已撤销的条目，同 id 只保留首个有效条目
+ * （出队按集合判定，首条生效，见 compactQueuesIfStale）。
+ */
+function compactQueue<Id, Task extends { id: Id }>(
+  queue: Task[],
+  cursor: number,
+  liveIds: Set<Id>,
+): Task[] {
+  const compacted: Task[] = []
+  const seen = new Set<Id>()
+  for (let i = cursor; i < queue.length; i++) {
+    const task = queue[i]!
+    if (!liveIds.has(task.id) || seen.has(task.id)) continue
+    seen.add(task.id)
+    compacted.push(task)
+  }
+  return compacted
 }
 
 function expandRect(rect: IndexBounds, ratio: number): IndexBounds {
