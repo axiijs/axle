@@ -134,31 +134,53 @@ export class DotLayer<Id> {
     })
   }
 
-  /** 相交的脏区就地合并；溢出时并入面积增长最小的一个（见 MAX_DIRTY_RECTS） */
+  /** 相交的脏区级联合并；溢出时并入面积增长最小的一个（见 MAX_DIRTY_RECTS） */
   private addDirtyRect(rect: IndexBounds): void {
     const rects = this.dirtyRects
-    // 拖拽帧的新旧包围盒通常相邻/重叠，优先与既有脏区合并
-    for (let i = 0; i < rects.length; i++) {
-      if (boundsIntersect(rects[i]!, rect)) {
-        rects[i] = unionBounds(rects[i]!, rect)
-        return
-      }
-    }
+    // 拖拽帧的新旧包围盒通常相邻/重叠，优先与既有脏区合并。
+    // 合并必须级联：并集可能新覆盖此前不相交的脏区（长距离拖拽的新旧包围盒
+    // 各自吸附过一片脏区的形态），只合并一轮会留下互相重叠的脏区——同一
+    // 区域被 forceRender 重复失效、重复重绘。列表上限 MAX_DIRTY_RECTS（8），
+    // 级联总步数有界，正常路径（不相交）仍是一轮线性扫描。
+    let pending = rect
+    pending = this.absorbIntersecting(pending)
     if (rects.length < MAX_DIRTY_RECTS) {
-      rects.push(rect)
+      rects.push(pending)
       return
     }
+    // 溢出：并入面积增长最小的一个。并入后的并集可能与其余脏区新相交，
+    // 摘出该项再级联一轮（腾出的空位保证最终 push 不会再溢出）。
     let best = 0
     let bestGrowth = Infinity
     for (let i = 0; i < rects.length; i++) {
-      const union = unionBounds(rects[i]!, rect)
+      const union = unionBounds(rects[i]!, pending)
       const growth = union.width * union.height - rects[i]!.width * rects[i]!.height
       if (growth < bestGrowth) {
         bestGrowth = growth
         best = i
       }
     }
-    rects[best] = unionBounds(rects[best]!, rect)
+    pending = unionBounds(rects[best]!, pending)
+    rects[best] = rects[rects.length - 1]!
+    rects.pop()
+    rects.push(this.absorbIntersecting(pending))
+  }
+
+  /** 把与 pending 相交的脏区全部吸收进并集（swap-pop 摘除），返回最终并集 */
+  private absorbIntersecting(pending: IndexBounds): IndexBounds {
+    const rects = this.dirtyRects
+    for (let i = 0; i < rects.length; ) {
+      if (boundsIntersect(rects[i]!, pending)) {
+        pending = unionBounds(rects[i]!, pending)
+        rects[i] = rects[rects.length - 1]!
+        rects.pop()
+        // 并集变大了，从头重扫（列表 ≤ 8 项，成本有界）
+        i = 0
+      } else {
+        i++
+      }
+    }
+    return pending
   }
 
   private scheduleInvalidate(): void {
