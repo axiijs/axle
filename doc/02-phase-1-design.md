@@ -310,6 +310,16 @@ root.destroy()
 - `render` 不可重入（再次 render 前必须 destroy），返回根 Host。
 - root 自带一个事件总线：`on(event, cb, { once? })` / `dispatch(event, arg?)`。
   `render` 完成后 dispatch `attach`；`destroy` 前 dispatch `detach`。
+- **非 error 事件的监听器彼此隔离**（与 `flushAttachQueue` 的连坐语义对齐）：
+  attach 派发的是同批组件的 layoutEffect / ref（无钩子降级模式会向上抛），
+  第一个抛错的监听器不允许吞掉同批兄弟的执行——once 监听器已注销、attach
+  不会再派发，被连坐的组件将永远收不到 layoutEffect / ref。全部执行完后把
+  **首个**错误继续抛给调用方（attach 在用户 render 调用栈上，无钩子向上抛的
+  契约不变），后续错误 `console.error` 保持可观测。
+- **`destroy` 里的 detach 派发运行在清理路径上**（清理回调绝不向上抛的硬契约，
+  见 3.4）：detach 监听器抛错交给 error 钩子（此刻仍注册着）/ `console.error`，
+  绝不中断销毁流程——半销毁的 root（host 树还在、监听器已跑过 detach）没有
+  任何恢复手段。
 - **`error` 钩子自身抛错必须就地隔离**：`dispatch('error')` 经常在 data0 的
   computed patch / trigger session 里被调用，钩子的异常冒出去会击穿
   `runSimplePatch`（data0 无 try/finally）把 computed 永久卡死——此后每次对该

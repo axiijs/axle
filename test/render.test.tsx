@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Frame, Group, Leafer, Rect } from 'leafer-ui'
 import { AXLE_VERSION, createRoot } from '@axiijs/axle'
+import type { RenderContext } from '@axiijs/axle'
 import { contentChildren, contentTags, mount } from './helpers.js'
 
 describe('createRoot', () => {
@@ -116,6 +117,98 @@ describe('root events', () => {
     root.destroy()
     expect(root.dispatch('custom')).toBe(false)
     expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('一个监听器抛错不连坐同批兄弟，首个错误在全部执行后继续向上抛', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const calls: string[] = []
+      const first = new Error('first')
+      root.on('evt', () => {
+        calls.push('a')
+        throw first
+      })
+      root.on('evt', () => {
+        calls.push('b')
+        throw new Error('second')
+      })
+      root.on('evt', () => calls.push('c'))
+      expect(() => root.dispatch('evt')).toThrow(first) // 首个错误原样向上抛
+      expect(calls).toEqual(['a', 'b', 'c']) // 兄弟监听器全部执行
+      expect(consoleError).toHaveBeenCalledTimes(1) // 后续错误保持可观测
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('无钩子时 layoutEffect 抛错不再吞掉同批其他组件的 layoutEffect / ref（attach 派发隔离）', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const order: string[] = []
+    function Bad(_: object, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        order.push('bad')
+        throw new Error('layout boom')
+      })
+      return <rect />
+    }
+    function Good(_: object, { useLayoutEffect }: RenderContext) {
+      useLayoutEffect(() => {
+        order.push('good')
+      })
+      return <ellipse />
+    }
+    // 两个组件都在 root attach 前注册 once attach 监听器
+    expect(() =>
+      root.render(
+        <group>
+          <Bad />
+          <Good />
+        </group>,
+      ),
+    ).toThrow('layout boom') // 无钩子契约不变：错误落在用户 render 调用栈上
+    expect(order).toEqual(['bad', 'good']) // Good 的 layoutEffect 照常执行
+    root.destroy()
+  })
+
+  it('detach 监听器抛错不中断销毁流程（清理路径绝不向上抛）', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      root.on('detach', () => {
+        throw new Error('detach boom')
+      })
+      root.render(<rect />)
+      expect(() => root.destroy()).not.toThrow()
+      // 销毁流程完整走完：场景图清空、可以重新 render
+      expect((container as never as { children: unknown[] }).children.length).toBe(0)
+      expect(root.host).toBeUndefined()
+      expect(root.attached).toBe(false)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      root.render(<ellipse />)
+      expect(contentTags(container as never)).toEqual(['Ellipse'])
+      root.destroy()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('detach 监听器抛错时交给 error 钩子（此刻钩子仍注册着）', () => {
+    const container = new Group()
+    const root = createRoot(container as never)
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+    const boom = new Error('detach boom')
+    root.on('detach', () => {
+      throw boom
+    })
+    root.render(<rect />)
+    expect(() => root.destroy()).not.toThrow()
+    expect(errors).toEqual([boom])
+    expect(root.host).toBeUndefined()
   })
 })
 
