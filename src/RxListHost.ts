@@ -1,5 +1,5 @@
-import { computed, destroyComputed, ManualCleanup, RxList } from 'data0'
-import type { Computed, TrackOpTypes, TriggerInfo, TriggerOpTypes } from 'data0'
+import { computed, destroyComputed, ManualCleanup, RxList, TrackOpTypes, TriggerOpTypes } from 'data0'
+import type { Computed, TriggerInfo } from 'data0'
 import type { IUI } from 'leafer-ui'
 import type { Host, PathContext } from './Host.js'
 import { linkHost } from './Host.js'
@@ -8,12 +8,12 @@ import { createPlaceholder, insertBefore } from './leafer.js'
 import { destroyNode } from './leafer.js'
 import { assert, spliceArraySafe } from './util.js'
 
-// data0 的 TrackOpTypes / TriggerOpTypes 是 ambient const enum，
-// verbatimModuleSyntax 下不能引用其成员，这里使用字面量值。
-const TRACK_METHOD = 'method' as TrackOpTypes
-const TRIGGER_METHOD = 'method' as TriggerOpTypes
-const TRACK_EXPLICIT_KEY_CHANGE = 'explicit_key_change' as TrackOpTypes
-const TRIGGER_EXPLICIT_KEY_CHANGE = 'explicit_key_change' as TriggerOpTypes
+// data0 >= 2.5 的 TrackOpTypes / TriggerOpTypes 是运行时常量对象（不再是 ambient
+// const enum），verbatimModuleSyntax 下可以直接引用成员，不再需要字面量 workaround。
+const TRACK_METHOD = TrackOpTypes.METHOD
+const TRIGGER_METHOD = TriggerOpTypes.METHOD
+const TRACK_EXPLICIT_KEY_CHANGE = TrackOpTypes.EXPLICIT_KEY_CHANGE
+const TRIGGER_EXPLICIT_KEY_CHANGE = TriggerOpTypes.EXPLICIT_KEY_CHANGE
 
 function isHostRendered(host: Host): boolean {
   return !!host.firstNode.parent
