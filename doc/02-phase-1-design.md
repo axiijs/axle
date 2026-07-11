@@ -165,7 +165,15 @@ interface Host {
 ### 3.2 FunctionHost
 
 - 用 `DeferredBindingEffect`：首次同步求值渲染，之后依赖触发合并到微任务里重算
-  （同一 tick 多次触发只重算一次）。
+  （同一 tick 多次触发只重算一次）。**自触发环熔断**：source 的写入经间接反馈
+  回到自己的依赖（写 atom A、某个同步绑定把 A 映射到 source 依赖的 atom B——
+  直接自写与等值写入分别被 data0 的 activeEffect 守卫和 `Object.is` 去抖吸收，
+  穿透两道闸的都是真环）会形成永不让出事件循环的微任务环，页面挂死且无提示。
+  连续自触发重算达到阈值（`SELF_TRIGGER_RERUN_LIMIT`，100）即熔断：丢弃下一次
+  已排队的重算并上报（root error 钩子优先，未注册时 `console.error`），effect
+  保持活跃、下一次外部触发照常恢复；低于阈值的有限自稳定不受影响（计数按
+  已收敛的环清零）。熔断窗口内合并进来的外部触发随被丢弃的重算一起丢弃，
+  内容停在旧值直到下一次触发。
 - **文本快速路径**：函数返回原始值（`string/number/boolean/null`）时，只创建 / 原地更新
   一个 `Text` 节点；从结构结果切回原始值、或反向切换时正确清理。
 - 结构路径：销毁旧 innerHost，创建新占位符 + `createHost` 重建。重建过程中
@@ -245,6 +253,18 @@ EXPLICIT_KEY_CHANGE)`），用普通数组维护行 Host：
 
 行 Host 的 effect 不注册为本 computed 的子 effect（`pauseCollectChild`），行的销毁
 由 splice/destroy 显式完成。
+
+**宿主管理对象与外部 collect frame 的隔离**：patch 可能在某个 ManualCleanup
+collect frame 活跃期间同步执行（典型：组件函数体内写入已渲染列表，data0 的
+digest 同步跑到 applyPatch，写入组件的 frame 还在栈顶）。行渲染创建的宿主管理
+对象（元素属性的 `BindingEffect`、嵌套 `RxListHost` 的 computed）没有
+`detachFromCreationContext` 的自摘除能力，被外层 frame 收集后会随写入组件的
+销毁被误销毁——受害行**静默**失去响应。因此 `applyPatch` 与 `root.render`
+都用**丢弃 collect frame** 包住渲染（每 patch 批次 / 每次 render 一对分配，
+不在每行热路径上）；行内组件函数自己的 frame 是嵌套压栈的，用户 computed 的
+收集与生命周期不受影响（`frame-capture.test`）。注意该保护的边界：mapFn /
+组件体内**新建**的派生结构（如 `inner.map(...)`）按 data0 语义归创建方所有、
+随创建方销毁，不在此契约内。
 
 **开发期不变量自检**（`setListDiagnostics(true)`）：
 每个 patch 批次后校验：
@@ -334,7 +354,10 @@ root.render(<App />)
 root.destroy()
 ```
 
-- `render` 不可重入（再次 render 前必须 destroy），返回根 Host。
+- `render` 不可重入（再次 render 前必须 destroy），返回根 Host。整棵树的初次
+  渲染包在一个**丢弃 collect frame** 里：render 被调用在外部 collect frame
+  活跃期间（如另一个组件的函数体里 `createRoot().render()`）时，渲染期创建的
+  宿主管理对象不会被外层 frame 捕获（详见 3.3 的隔离说明）。
 - root 自带一个事件总线：`on(event, cb, { once? })` / `dispatch(event, arg?)`。
   `render` 完成后 dispatch `attach`；`destroy` 前 dispatch `detach`。
 - `root.reportError(error, info)` 是异步/已提交链路的可恢复错误出口，可直接传给
@@ -356,14 +379,34 @@ root.destroy()
   业务写入点、并跳过同批剩余 triggerInfo（列表区域状态不一致）。钩子抛错时
   `console.error` 报告并**仍视为已消费**（返回 true，区域照常降级）：把原错误
   继续抛回去违反「框架内部错误不转嫁业务写入点」的契约。
-- **`error` 钩子同步重入 `root.destroy()` 被容忍**（「出错整体卸载」的错误边界
-  写法）：错误上报发生在渲染事务内（初次渲染的建行循环 / data0 patch 还在栈上），
-  钩子销毁 root 后框架立即停手——`RxListHost` 以 `destroyed` 标志让剩余建行 /
-  剩余 patch 全部放弃（绝不再触碰已拆除的场景图），刚插入而尚未进簿记的空行
-  占位符就地清掉，初始 computation 内重入时 computed 由 `render()` 末尾补销毁
-  （不泄漏数据源订阅）；`root.render` 检测到重入后不再置 `attached` / 派发
-  `attach`，root 保持一致的「已销毁」状态、可直接重新 render。异常绝不抛回
-  `root.render()` / 业务写入点，容器不留孤儿（`error-hook-reentrant-destroy.test`）。
+- **`error` 钩子同步重入 `root.destroy()` 被容忍，且对所有区域类型一致**
+  （「出错整体卸载」的错误边界写法）：错误上报发生在渲染事务内（初次渲染的
+  建行循环、组件 / 元素 / 函数区域的 render、data0 patch 还在栈上），钩子销毁
+  root 后框架立即停手。实现分两层：
+  - **停手信号 `root.destroyed`**：`destroy()` 在一切拆除动作之前置位、
+    `render()` 开头复位（公开字段）。所有「dispatch 消费错误后继续渲染」的
+    续段先检查它再触碰场景图 / 创建新 effect：`ComponentHost`（frame 就地
+    隔离销毁、effects 循环停手且已返回的清理句柄就地隔离执行、不再注册
+    attach 监听 / 连通队列条目）、`ElementHost`（响应式 prop 循环、children
+    循环、占位符消费与 setupRef 之前）、`FunctionHost`（文本快速路径之前；
+    结构重建完成后在建 innerHost 尚未进簿记时就地整体拆除）、
+    `StaticArrayHost`（逐 item）、`RxListHost`（原有 `destroyed` 守卫之外，
+    `createRowHost` 末尾发现重入时把尚未进簿记的在建行整体拆掉并返回游离
+    空行；`recoverFailedRow` 在锚点已随树拆除时跳过占位符插入、按 getNodes
+    对半行残留节点做兜底清理）。初始 computation 内重入时 computed 由
+    `render()` 末尾补销毁（不泄漏数据源订阅）；`root.render` 检测到重入后
+    不再置 `attached` / 派发 `attach`，root 保持一致的「已销毁」状态、可直接
+    重新 render。异常绝不抛回 `root.render()` / 业务写入点，容器不留孤儿
+    （`error-hook-reentrant-destroy.test`）。
+  - **`destroy` 自身可重入且幂等**：销毁路径上的清理回调抛错经
+    `runCleanupIsolated` → error 钩子，钩子再调 `root.destroy()` 时直接返回
+    （无守卫时整棵树会被二次销毁：抛错的 cleanup 再次执行 → 再次进钩子 →
+    无限递归，列表场景下每层重入重新遍历全部行、实测放大到 OOM）。
+    `RxListHost` / `ComponentHost` / `ElementHost` 的 `destroy` 同样有入口
+    幂等守卫：**用户清理回调（onCleanup / layoutEffect 清理 / ref detach）
+    保证只执行一次**，双重销毁（重入之外还有行 splice 对已被重入销毁的行
+    再次 destroy 的形态）不会重复执行。连续两次 `root.destroy()` 第二次是
+    no-op（detach 只派发一次）。
 - `destroy` 销毁整棵 Host 树（场景图上 axle 创建的节点全部移除），不销毁容器本身。
 
 ## 5. 非目标（Phase 1 明确不做）

@@ -54,6 +54,20 @@ npm run smoke:stress   # 压测页 e2e 冒烟：需要先起 playground 于 5199
   列表**行销毁**整体隔离（`RxListHost.destroyRowHost`：销毁抛错报告 + 节点兜底清理，
   被 splice 摘出簿记的行绝不允许泄漏成孤儿）；**error 钩子自身抛错**由 dispatch 就地隔离
   （冒出去会同步抛回业务写入点并跳过同批剩余 patch，见 render.ts 的 CAUTION）；
+- **钩子重入 `root.destroy()` 的停手与 destroy 幂等**（doc/02 §4）：`root.destroyed`
+  是渲染事务的停手信号（destroy 一开始置位、render 开头复位），任何「dispatch
+  消费错误后继续渲染」的续段必须先检查它再触碰场景图 / 创建 effect——这对
+  **所有区域类型**成立（组件 / 元素 / 函数区域 / 静态数组 / 列表行），不只是
+  RxListHost；`root.destroy` 与 `RxListHost` / `ComponentHost` / `ElementHost`
+  的 destroy 都有入口幂等守卫——销毁路径清理抛错 → 钩子 → 钩子再 destroy 的
+  重入绝不允许把树二次销毁（用户清理只执行一次；无守卫时会递归放大到 OOM）；
+- **宿主管理对象不进外部 collect frame**（doc/02 §3.3 / §4）：`RxListHost.applyPatch`
+  与 `root.render` 用丢弃 collect frame 包住渲染——组件 render 期间同步写入已
+  渲染列表 / 嵌套 root.render 时，行绑定 effect 与嵌套列表 computed 不被写入
+  组件的 frame 捕获（否则随其销毁、区域静默失去响应）；
+- **函数 child 自触发环有熔断**（doc/02 §3.2）：连续自触发重算超过
+  `SELF_TRIGGER_RERUN_LIMIT` 时丢弃排队中的重算并走 error 钩子 / console.error，
+  微任务环不允许无提示地挂死页面；
 - **渲染必须事务化**：失败时回滚已插入场景图的节点（`RxListHost.createRowHost`、
   `FunctionHost.renderSource` 的 `(boundary, placeholder)` 区间回滚是范式），绝不留孤儿节点；
   未消费的占位符也在事务内（render 中途抛错后非 parentHandle 销毁必须清掉）；

@@ -87,6 +87,13 @@ export class ElementHost implements Host {
   refProp?: RefProp
   /** ref 已经 attach 过（destroy 时才需要 detach，未 attach 的 ref 不应收到 null） */
   refAttached?: boolean
+  /**
+   * destroy 是否已执行（幂等守卫）。error 钩子重入 root.destroy() 的场景下
+   * 本 host 可能被二次销毁（重入 destroy 销毁过一次，行 splice / 事务回滚又
+   * 销毁一次）——ref detach 等用户回调绝不允许执行两次。只在 destroy 时写入，
+   * 不占挂载热路径。
+   */
+  destroyed?: boolean
   removeAttachListener?: () => void
   constructor(
     public source: AxleNode,
@@ -172,6 +179,11 @@ export class ElementHost implements Host {
       const attrEffects: BindingEffect[] = (this.attrEffects = [])
       const target = ui as unknown as Record<string, unknown>
       for (const [key, value] of reactiveProps) {
+        // CAUTION 渲染事务停手（doc/02 §4）：上一轮初始求值的错误可能被 error
+        //  钩子消费、且钩子同步重入了 root.destroy()——本 host 已被销毁（已
+        //  簿记的 effect 全部拆除），此后再创建的 effect 落在 destroy 遍历之外，
+        //  会泄漏成继续响应依赖的活效应。正常路径每个响应式 prop 一次布尔检查。
+        if (this.pathContext.root.destroyed) break
         // CAUTION 属性更新抛错：外部通过 root.on('error') 注册了处理器时报告
         //  错误并跳过本次更新（effect 保持活跃，依赖恢复后可继续更新），与
         //  ComponentHost/FunctionHost 的错误钩子语义一致。
@@ -209,9 +221,18 @@ export class ElementHost implements Host {
       }
     }
 
+    // CAUTION 渲染事务停手（doc/02 §4）：属性初始求值 / children 渲染期间
+    //  error 钩子可能消费掉错误并同步重入 root.destroy()。此后绝不再触碰
+    //  场景图——root 直系 / 静态 child 路径上本 host 的 destroy 已执行（ui 与
+    //  占位符已拆），继续 insertBefore 会踩到已销毁的锚点、setupRef 会往已
+    //  清空的监听表 / 连通队列里塞存活到下一次 render 的条目；列表行路径由
+    //  createRowHost 的停手兜底整体销毁本 host。正常路径只多两次布尔检查。
+    if (this.pathContext.root.destroyed) return
+
     if (!isText && children.length) {
       assert(ui.isBranch, `<${tag}> is not a branch element and cannot have children`)
       this.renderChildren(ui, children)
+      if (this.pathContext.root.destroyed) return
     }
 
     if (this.placeholder) {
@@ -269,6 +290,9 @@ export class ElementHost implements Host {
     }
     const childHosts = (this.childHosts ||= [])
     for (const child of children) {
+      // 停手信号（见 render 内 CAUTION）：前一个 child 渲染中钩子可能消费错误
+      // 并重入 root.destroy()，后续 child 不再创建。每 child 一次布尔检查。
+      if (this.pathContext.root.destroyed) return
       // 静态的空 child 直接忽略（条件渲染的空值来自 FunctionHost，不走这里）
       if (child === null || child === undefined || typeof child === 'boolean') continue
       if (typeof child === 'string' || typeof child === 'number') {
@@ -306,6 +330,10 @@ export class ElementHost implements Host {
     }
   }
   destroy(parentHandle?: boolean): void {
+    // 入口幂等守卫（同 ComponentHost.destroy 的 CAUTION）：二次销毁时用户
+    // ref detach 不允许再次收到 null。正常路径一次布尔检查。
+    if (this.destroyed) return
+    this.destroyed = true
     if (this.attrEffects) {
       for (const effect of this.attrEffects) effect.destroy()
     }

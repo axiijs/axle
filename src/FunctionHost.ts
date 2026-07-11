@@ -96,6 +96,11 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
   update(): void {
     this.renderSource(this)
   }
+  // 自触发环熔断（DeferredBindingEffect）的上报出口：函数 child 持有 root，
+  // 与其余可恢复错误同一出口（钩子优先，未注册时 console.error）
+  override reportUpdateLoop(error: Error): void {
+    if (!this.pathContext.root.dispatch('error', error)) console.error(error)
+  }
   renderSource(effect: DeferredBindingEffect): void {
     // 每次重算前清理上一次注册的 cleanup
     this.runCleanups()
@@ -121,6 +126,13 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
         return
       }
     }
+
+    // CAUTION 渲染事务停手（doc/02 §4）：source 求值的错误可能被 error 钩子
+    //  消费、且钩子同步重入了 root.destroy()（初次渲染时上面的 catch 消费后
+    //  会继续往下走）；source 自身的响应式写入也可能触发行错误 → 钩子重入。
+    //  此后占位符已随树拆除，继续创建文本节点 / 重建结构都会踩到已销毁的
+    //  锚点。文本快速路径只多一次布尔检查、零分配（AGENTS §1）。
+    if (this.pathContext.root.destroyed) return
 
     const valueType = typeof node
     if (
@@ -171,6 +183,21 @@ export class FunctionHost extends DeferredBindingEffect implements Host {
         hostPath: linkHost(this, this.pathContext.hostPath),
       })
       innerHost.render()
+      // CAUTION 内层渲染期间 error 钩子可能消费掉区域内错误并同步重入
+      //  root.destroy()：内层 render 正常返回，但整棵树已拆除、本 effect 已被
+      //  destroy 置为 inactive——在建的 innerHost 不能再挂上簿记（destroy 不会
+      //  再来一次），就地整体拆除（非 parentHandle 连同其游离节点，叠加在
+      //  已拆场景图上的 destroyNode 是 leafer 幂等 no-op），否则其中的绑定
+      //  effect 泄漏成活孤儿。只在错误重入路径上发生，正常路径一次布尔检查。
+      if (this.pathContext.root.destroyed) {
+        const abandoned = innerHost
+        runCleanupIsolated(
+          this.pathContext.root,
+          () => abandoned.destroy(),
+          'function child abandoned render teardown',
+        )
+        return
+      }
       this.innerHost = innerHost
     } catch (e) {
       // CAUTION 结构渲染抛错必须就地隔离：更新运行在微任务里，向上抛只会变成

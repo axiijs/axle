@@ -239,3 +239,74 @@ describe('FunctionHost error handling', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * 函数 child 的自触发环熔断（DeferredBindingEffect 的集成面）：
+ * source 写 atom A、某个同步属性绑定把 A 映射到 source 依赖的 atom B——
+ * 微任务重算环不让出事件循环、页面挂死且无提示。熔断后错误走 root 的
+ * 统一出口（钩子优先 / console.error），effect 保持活跃可恢复。
+ */
+describe('FunctionHost 自触发环熔断', () => {
+  /** 排空整条微任务链（熔断在 100+ 个连续微任务后发生，需要宏任务边界） */
+  const drainMicrotasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+  function renderFeedbackLoop() {
+    const source = atom(0)
+    const mirror = atom(0)
+    let selfWrite = true
+    // <rect> 的属性绑定充当同步桥：source → mirror；
+    // 函数 child 读 mirror 写 source，构成间接反馈环
+    const { container, root } = mount(
+      <group>
+        <rect
+          width={() => {
+            mirror(source())
+            return 1
+          }}
+        />
+        {() => {
+          const v = mirror()
+          if (selfWrite) source(v + 1)
+          return String(v)
+        }}
+      </group>,
+    )
+    return { container, root, source, mirror, stop: () => (selfWrite = false) }
+  }
+
+  it('有钩子：熔断错误交给 error 钩子，熔断后外部触发可恢复', async () => {
+    const { container, root, source, stop } = renderFeedbackLoop()
+    const errors: unknown[] = []
+    root.on('error', (e) => errors.push(e))
+
+    await drainMicrotasks()
+    expect(errors.length).toBe(1)
+    expect(String(errors[0])).toContain('retriggering')
+
+    // 链已断：不再有新的重算与新的上报
+    await drainMicrotasks()
+    expect(errors.length).toBe(1)
+
+    // effect 保持活跃：停止自写后外部触发照常恢复渲染
+    stop()
+    source(500)
+    await drainMicrotasks()
+    const group = contentChildren(container)[0]!
+    const text = contentChildren(group)[1]! as IText
+    expect(text.text).toBe('500')
+    root.destroy()
+  })
+
+  it('无钩子：熔断错误落到 console.error（不挂死、不静默）', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { root } = renderFeedbackLoop()
+      await drainMicrotasks()
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      expect(String(consoleError.mock.calls[0]![0])).toContain('retriggering')
+      root.destroy()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})
