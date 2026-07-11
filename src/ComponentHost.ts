@@ -154,7 +154,11 @@ export class ComponentHost implements Host {
         if (typeof handle !== 'function') continue
         if (this.pathContext.root.destroyed) {
           // effect 自身执行期间发生了重入 destroy：清理句柄就地隔离执行
-          runCleanupIsolated(this.pathContext.root, handle as () => unknown, 'component effect cleanup')
+          runCleanupIsolated(
+            this.pathContext.root,
+            handle as () => unknown,
+            'component effect cleanup',
+          )
           break
         }
         this.onCleanup(handle as () => unknown)

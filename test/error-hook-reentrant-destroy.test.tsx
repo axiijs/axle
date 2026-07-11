@@ -3,7 +3,7 @@ import { atom, computed, RxList } from 'data0'
 import { Group } from 'leafer-ui'
 import type { IUI } from 'leafer-ui'
 import { createRoot } from '@axiijs/axle'
-import type { RenderContext } from '@axiijs/axle'
+import type { Props, RenderContext } from '@axiijs/axle'
 import { contentChildren, tick } from './helpers.js'
 
 /**
@@ -476,7 +476,7 @@ describe('destroy 幂等', () => {
     const root = createRoot(container)
     const cleanup = vi.fn()
     const refValues: unknown[] = []
-    function App(_props: unknown, { onCleanup, expose }: RenderContext) {
+    function App(_props: Props, { onCleanup, expose }: RenderContext) {
       expose({ tag: 'app' })
       onCleanup(cleanup)
       return <rect />
