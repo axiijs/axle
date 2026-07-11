@@ -32,6 +32,11 @@ export class StaticArrayHost implements Host {
       hostPath: linkHost(this, this.pathContext.hostPath),
     }
     for (const item of this.source) {
+      // CAUTION 渲染事务停手（doc/02 §4）：前一个 item 渲染中 error 钩子可能
+      //  消费掉错误并同步重入 root.destroy()——常驻占位符已随树拆除，继续
+      //  insertBefore 会踩到已销毁的锚点（异常抛回 root.render / 业务写入点）。
+      //  静态数组只在挂载时构建一次，每 item 一次布尔检查。
+      if (this.pathContext.root.destroyed) return
       const itemPlaceholder = createPlaceholder('array item')
       insertBefore(itemPlaceholder, this.placeholder)
       // CAUTION createHost 分发自身抛错（非法 item 类型）时必须就地清掉刚插入的

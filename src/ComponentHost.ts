@@ -29,10 +29,18 @@ export class ComponentHost implements Host {
   effects?: Set<EffectHandle>
   destroyCallbacks?: Set<() => unknown>
   layoutEffectDestroyHandles?: Set<() => unknown>
-  frame?: ManualCleanup[]
+  /** exactOptionalPropertyTypes 下显式放宽：destroyFrame 置空防重复销毁 */
+  frame?: ManualCleanup[] | undefined
   removeAttachListener?: () => void
   /** ref 已经 attach 过（destroy 时才需要 detach，未 attach 的 ref 不应收到 null） */
   refAttached?: boolean
+  /**
+   * destroy 是否已执行（幂等守卫）。error 钩子重入 root.destroy() 的场景下
+   * 本 host 可能被二次销毁（如同批 splice 的被删行：重入 destroy 已经销毁过，
+   * patch 循环随后又对它调用 destroyRowHost）——用户清理回调绝不允许执行
+   * 两次。字段只在 destroy 时写入，不占挂载热路径。
+   */
+  destroyed?: boolean
   placeholder: IUI | null
   constructor(
     public type: Component,
@@ -97,6 +105,19 @@ export class ComponentHost implements Host {
       this.frame = getFrame() as unknown as ManualCleanup[]
     }
 
+    // CAUTION 渲染事务停手（doc/02 §4）：error 钩子可能消费掉组件函数的渲染
+    //  错误并同步重入 root.destroy()。此刻整棵树已拆除——继续渲染会把
+    //  innerPlaceholder 插到已销毁的锚点上（异常抛回 root.render / 业务写入点）。
+    //  root 直系 / 元素 child 路径上本 host 的 destroy 已执行，但 frame 是
+    //  destroy 之后才在上面的 finally 里赋值的，重入 destroy 够不到——这里就地
+    //  隔离销毁，否则组件函数创建的 computed / RxLeaferState 泄漏成活孤儿；
+    //  列表行路径上本 host 尚未进簿记，由 createRowHost 的停手兜底整体销毁
+    //  （destroyFrame 置空后那次销毁不会二次执行）。正常路径只多一次布尔检查。
+    if (this.pathContext.root.destroyed) {
+      this.destroyFrame()
+      return
+    }
+
     const innerPlaceholder = createPlaceholder('component')
     insertBefore(innerPlaceholder, this.placeholder!)
     // CAUTION createHost 分发自身抛错（组件返回非法 child 类型）时必须就地清掉
@@ -121,10 +142,29 @@ export class ComponentHost implements Host {
     destroyNode(this.placeholder!)
     this.placeholder = null
 
-    this.effects?.forEach((effect) => {
-      const handle = this.runWithErrorHook(effect)
-      if (typeof handle === 'function') this.onCleanup(handle as () => unknown)
-    })
+    // CAUTION for..of 而不是 forEach：effect 抛错被钩子消费、且钩子重入了
+    //  root.destroy()（或 effect 内的响应式写触发行错误 → 钩子重入）时必须
+    //  停手——组件树已拆除，继续执行的挂载 effect 面向的是不存在的树，其
+    //  返回的清理句柄也已无人回收（destroyCallbacks 在重入 destroy 里跑过了），
+    //  只能就地隔离执行。正常路径每个 effect 一次布尔检查。
+    if (this.effects) {
+      for (const effect of this.effects) {
+        if (this.pathContext.root.destroyed) break
+        const handle = this.runWithErrorHook(effect)
+        if (typeof handle !== 'function') continue
+        if (this.pathContext.root.destroyed) {
+          // effect 自身执行期间发生了重入 destroy：清理句柄就地隔离执行
+          runCleanupIsolated(this.pathContext.root, handle as () => unknown, 'component effect cleanup')
+          break
+        }
+        this.onCleanup(handle as () => unknown)
+      }
+    }
+
+    // 停手信号（同上）：已拆除的树不注册任何 attach 监听 / 连通队列条目——
+    // 监听表已被 destroy 清空，此刻注册的条目会存活到下一次 render 的 attach
+    // 派发，对已销毁的组件执行 layoutEffect / ref。正常路径一次布尔检查。
+    if (this.pathContext.root.destroyed) return
 
     if (this.pathContext.root.attached) {
       if (!this.layoutEffects && !this.refProp) {
@@ -188,7 +228,34 @@ export class ComponentHost implements Host {
       }
     })
   }
+  /**
+   * 销毁 render 期收集的 frame（逐个隔离），置空防重复执行。
+   * CAUTION frame 里是 render 期间收集的 computed / RxList / RxLeaferState 等，
+   *  它们的 destroy 会执行用户清理代码（computed 的 onCleanup、RxLeaferState
+   *  子类的 abort），必须逐个隔离：一个抛错的 destroy 若中断遍历，
+   *  innerHost 销毁与 attach 队列退订全部被跳过——子树的绑定 effect 泄漏成
+   *  还在响应数据更新的「活孤儿」，root.destroy 更会把异常抛回调用方、留下
+   *  没有任何恢复手段的半销毁树（违反「清理回调绝不向上抛」的硬契约）。
+   */
+  destroyFrame(): void {
+    const frame = this.frame
+    if (!frame) return
+    this.frame = undefined
+    for (const cleanup of frame) {
+      runCleanupIsolated(
+        this.pathContext.root,
+        () => cleanup.destroy(),
+        'component render-scope cleanup',
+      )
+    }
+  }
   destroy(parentHandle?: boolean): void {
+    // CAUTION 入口幂等守卫：error 钩子重入 root.destroy() 的场景下本 host 可能
+    //  被二次销毁（重入 destroy 已经销毁过，随后的行 splice / 事务回滚又对它
+    //  调用 destroy）——用户清理回调（onCleanup / layoutEffect 清理 / ref detach）
+    //  绝不允许执行两次。已销毁直接返回，正常路径一次布尔检查。
+    if (this.destroyed) return
+    this.destroyed = true
     const root = this.pathContext.root
     // CAUTION 销毁顺序契约（doc/02 §3.4）：用户清理回调（layoutEffect 清理 →
     //  useEffect 清理 / onCleanup）必须在 ref 置空、render 期 computed 销毁、
@@ -208,15 +275,7 @@ export class ComponentHost implements Host {
     if (this.refAttached) {
       runCleanupIsolated(root, () => detachRef(this.refProp), 'component ref detach')
     }
-    // CAUTION frame 里是 render 期间收集的 computed / RxList / RxLeaferState 等，
-    //  它们的 destroy 会执行用户清理代码（computed 的 onCleanup、RxLeaferState
-    //  子类的 abort），必须逐个隔离：一个抛错的 destroy 若中断 forEach，
-    //  innerHost 销毁与 attach 队列退订全部被跳过——子树的绑定 effect 泄漏成
-    //  还在响应数据更新的「活孤儿」，root.destroy 更会把异常抛回调用方、留下
-    //  没有任何恢复手段的半销毁树（违反「清理回调绝不向上抛」的硬契约）。
-    this.frame?.forEach((cleanup) =>
-      runCleanupIsolated(root, () => cleanup.destroy(), 'component render-scope cleanup'),
-    )
+    this.destroyFrame()
     this.innerHost?.destroy(parentHandle)
     this.removeAttachListener?.()
     if (!parentHandle && this.placeholder) destroyNode(this.placeholder)

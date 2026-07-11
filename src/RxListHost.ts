@@ -1,4 +1,4 @@
-import { computed, destroyComputed, RxList } from 'data0'
+import { computed, destroyComputed, ManualCleanup, RxList } from 'data0'
 import type { Computed, TrackOpTypes, TriggerInfo, TriggerOpTypes } from 'data0'
 import type { IUI } from 'leafer-ui'
 import type { Host, PathContext } from './Host.js'
@@ -104,6 +104,17 @@ export class RxListHost implements Host {
     try {
       host = createHost(item, rowPlaceholder, this.rowContext!)
       host.render()
+      // CAUTION 行渲染期间 error 钩子可能消费掉行内错误并同步重入
+      //  root.destroy()（doc/02 §4）：错误被钩子消费后 render 正常返回，不走
+      //  下面的 catch——而本行尚未进 hosts 簿记，重入 destroy 的行遍历够不到
+      //  它，行内已建立的 effect / 节点会泄漏成永久孤儿。这里就地拆掉整行
+      //  （destroyRowHost 隔离销毁错误并兜底清理节点），并按「必然返回可用
+      //  host」的契约返回游离空行（与方法开头的 destroyed 守卫同一形状）。
+      //  正常路径只多一次布尔检查，成本只在错误重入路径上。
+      if (this.destroyed) {
+        this.destroyRowHost(host)
+        return new EmptyHost(createPlaceholder('list row (destroyed)'), this.rowContext!)
+      }
       return host
     } catch (error) {
       return this.recoverFailedRow(error, host, boundary, anchor)
@@ -124,6 +135,18 @@ export class RxListHost implements Host {
       } catch {
         // 半渲染 host 的清理是尽力而为，剩余节点由区间回滚兜底
       }
+      // CAUTION 半行清理回调可能抛错 → 钩子消费 → 重入 root.destroy()：场景图
+      //  已拆、anchor 已失效，下面的区间回滚会因找不到 anchor.parent 而整体
+      //  跳过——本行的残留节点（含行占位符）没有任何簿记指向，必须按
+      //  getNodes 兜底清掉（与 destroyRowHost 的节点兜底同一手法），否则
+      //  泄漏成容器里的永久孤儿。只在错误重入路径上发生。
+      if (this.destroyed) {
+        try {
+          for (const node of partialHost.getNodes()) destroyNode(node)
+        } catch {
+          // 节点兜底清理尽力而为（host 可能已半销毁）
+        }
+      }
     }
     // 2. 回滚该行已进入场景图的全部顶层节点（(boundary, anchor) 开区间）。
     //    boundary/anchor 理论上都稳定；万一找不到（区间被外部破坏），
@@ -138,9 +161,12 @@ export class RxListHost implements Host {
         for (const orphan of orphans) destroyNode(orphan)
       }
     }
-    // 3. 降级为空行，保证 hosts 簿记与场景图一致
+    // 3. 降级为空行，保证 hosts 簿记与场景图一致。
+    //    CAUTION 行渲染「错误被钩子消费 + 钩子重入 root.destroy()」之后又从
+    //    同一行抛出第二个错误的复合形态：锚点已随场景图拆除，空行占位符
+    //    不再插入（保持游离，由下方的 destroyed 兜底就地销毁）。
     const rowPlaceholder = createPlaceholder('list row')
-    insertBefore(rowPlaceholder, anchor)
+    if (!this.destroyed) insertBefore(rowPlaceholder, anchor)
     const emptyRow = new EmptyHost(rowPlaceholder, this.rowContext!)
     // 4. 错误交给 root error 钩子。未注册钩子时用 console.error 报告，
     //    CAUTION 不能向上抛：行创建运行在 data0 computed 的 getter/patch 里。
@@ -230,6 +256,15 @@ export class RxListHost implements Host {
       },
       function applyPatch(this: Computed, _data, triggerInfos) {
         this.pauseCollectChild()
+        // CAUTION 丢弃 collect frame：patch 可能在某个 ManualCleanup collect
+        //  frame 活跃期间同步执行（典型：组件函数体内写入已渲染列表——data0
+        //  的 digest 同步跑到这里，写入组件的 frame 还在栈顶）。行渲染创建的
+        //  宿主管理对象（元素属性的 BindingEffect、嵌套 RxListHost 的 computed）
+        //  没有 detachFromCreationContext 的自摘除能力，会被外层 frame 收集——
+        //  写入组件销毁时 frame.forEach 把行的绑定误销毁，行**静默**失去响应。
+        //  行内组件函数自己的 frame 是嵌套压栈的，用户 computed 的收集不受
+        //  影响。成本是每个 patch 批次一对数组分配，不在每行热路径上（AGENTS §1）。
+        const discardFrame = ManualCleanup.collectEffect()
         try {
           for (const info of triggerInfos) {
             // error 钩子重入 root.destroy()（见 destroyed 字段注释）：剩余
@@ -274,6 +309,7 @@ export class RxListHost implements Host {
             }
           }
         } finally {
+          discardFrame()
           this.resumeCollectChild()
         }
       },
@@ -515,6 +551,13 @@ export class RxListHost implements Host {
     }
   }
   destroy(parentHandle?: boolean): void {
+    // CAUTION 入口幂等守卫：本方法自身可能被重入——行销毁的清理回调抛错经
+    //  destroyRowHost → error 钩子 → root.destroy() → 又走到本方法（root 级
+    //  守卫拦住 root.destroy 的重入，但 root.destroy 之外的直接双重销毁、
+    //  以及守卫加入前的历史路径都可能二次到达）。无守卫时重入会把全部行
+    //  再销毁一遍：抛错的清理再次执行 → 再次进钩子 → 递归放大（每层重新
+    //  遍历全部行，实测 OOM）。已销毁直接返回，正常路径一次布尔检查。
+    if (this.destroyed) return
     // 先置位再拆除：destroy 可能是 error 钩子从建行循环里重入调用的
     //（见 destroyed 字段注释），置位让栈上还没跑完的循环立即停手。
     this.destroyed = true

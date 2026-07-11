@@ -1,3 +1,4 @@
+import { ManualCleanup } from 'data0'
 import type { IUI } from 'leafer-ui'
 import type { AxleErrorHandler, AxleErrorInfo } from './diagnostics.js'
 import type { Host, PathContext } from './Host.js'
@@ -28,6 +29,18 @@ export type Root = {
   container: IUI
   host: Host | undefined
   attached: boolean
+  /**
+   * root 已被 destroy 且尚未重新 render。
+   *
+   * CAUTION 这是渲染事务的「停手」信号（doc/02 §4）：error 钩子可能在渲染
+   *  事务内同步重入 `root.destroy()`（「出错整体卸载」的错误边界写法），
+   *  彼时组件/元素/函数区域的 render 还在栈上——dispatch 消费错误后继续
+   *  渲染的每个续段都必须先检查本标志再触碰场景图 / 创建新 effect，否则
+   *  会踩到已拆除的锚点（异常抛回 root.render / 业务写入点）或泄漏出
+   *  destroy 遍历够不到的活 effect / 孤儿节点。
+   *  在 destroy 一开始置位（也是 destroy 自身的重入守卫），render 开头复位。
+   */
+  destroyed: boolean
   /** 当前 root 的列表诊断覆盖；undefined 表示使用全局默认值 */
   listDiagnostics: boolean | undefined
   render: (node: unknown) => Host
@@ -69,10 +82,13 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
     container,
     host: undefined,
     attached: false,
+    destroyed: false,
     listDiagnostics: options?.listDiagnostics,
     render(node: unknown) {
       // render 不可重入，否则会往容器里追加多棵树
       assert(!root.host, 'root can only render once, destroy the root before rendering again')
+      // 上一次 destroy 后重新 render：复位停手信号（root 重新变为存活）
+      root.destroyed = false
       const placeholder = createPlaceholder('root')
       container.add(placeholder)
       const pathContext: PathContext = { root, hostPath: null }
@@ -87,7 +103,20 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
         destroyNode(placeholder)
         throw e
       }
-      rootHost.render()
+      // CAUTION 丢弃 collect frame 包住整棵树的初次渲染：render 可能被调用在
+      //  某个 ManualCleanup collect frame 活跃期间（典型：另一个组件的函数体里
+      //  createRoot().render()）。渲染期创建的宿主管理对象（元素属性的
+      //  BindingEffect、RxListHost 的 computed）没有 detachFromCreationContext
+      //  的自摘除能力，会被外层 frame 收集——外层组件销毁时 frame.forEach 把
+      //  本树的绑定误销毁，区域静默失去响应。组件函数自己的 frame 是嵌套
+      //  压栈的，用户 computed 的收集不受影响。每 root 一次 render 一对
+      //  数组分配，不在任何热路径上。
+      const discardFrame = ManualCleanup.collectEffect()
+      try {
+        rootHost.render()
+      } finally {
+        discardFrame()
+      }
       // CAUTION error 钩子可能在渲染事务内同步重入 root.destroy()（doc/02 §4，
       //  RxListHost 等区域会降级停手、不再触碰场景图）：此时 root.host 已被
       //  destroy 清空，不能再置 attached / 派发 attach——否则 root 落入
@@ -100,6 +129,16 @@ export function createRoot(container: IUI, options?: CreateRootOptions): Root {
       return rootHost
     },
     destroy() {
+      // CAUTION destroy 必须可重入（doc/02 §4）：销毁路径上的清理回调抛错会经
+      //  runCleanupIsolated → dispatch('error') → 用户钩子可能再次调用
+      //  root.destroy()（「出错整体卸载」的错误边界写法）。无守卫时重入会把
+      //  整棵树二次销毁：抛错的那个 cleanup 再次执行 → 再次进钩子 → 无限
+      //  递归（列表场景下每层重入重新遍历全部行，实测直接 OOM）。
+      //  在一切拆除动作之前置位 destroyed：重入调用直接返回，由最外层
+      //  destroy 走完剩余流程；该标志同时是渲染事务的停手信号（见字段注释）。
+      //  顺带让 destroy 幂等（连续两次 destroy 第二次是 no-op）。
+      if (root.destroyed) return
+      root.destroyed = true
       // 先派发 detach 再清空监听器，否则 detach 监听器永远不会被调用。
       // CAUTION detach 监听器运行在清理路径上（「清理回调抛错绝不向上抛」的
       //  硬契约，doc/02 §3.4）：监听器抛错交给 error 钩子（此刻仍注册着）/
