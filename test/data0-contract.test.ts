@@ -149,6 +149,43 @@ describe('computed(computation, applyPatch, true) 的执行语义', () => {
     expect(sub.getterRuns()).toBe(1)
     sub.destroy()
   })
+
+  it('patch 向 data0 上抛后的恢复语义（2.9+ 重跑 computation）：axle 靠 applyPatch 永不上抛免疫', () => {
+    // data0 >= 2.9（2026-H2 缺陷类 4 修复）：patch 抛错（错误逃出 applyPatch）后
+    // 该 computed 回退到全量重算阶段——**下一次变更重跑 computation 而不是增量 patch**。
+    // axle 的 RxListHost 对此构造性免疫：applyPatch 把所有错误就地消化
+    // （error 钩子 / console.error + rebuildAllRows 自愈），永不向 data0 上抛。
+    // CAUTION 若未来改动 RxListHost 的错误出口（改为 rethrow），必须同步支持
+    //  computation 重跑（清理残留 hosts 再全量重建，参照 axii 的同名修复），
+    //  否则行会重复创建。本测试钉住上抛场景的 data0 行为，防语义漂移无人察觉。
+    const list = new RxList<number>([1])
+    let getterRuns = 0
+    let shouldThrow = true
+    const handle = computed(
+      function computation(this: Computed) {
+        getterRuns++
+        this.manualTrack(list, TRACK_METHOD, TRIGGER_METHOD)
+        return null
+      },
+      function applyPatch() {
+        if (shouldThrow) throw new Error('escaped patch error')
+      },
+      true,
+    )
+    expect(() => list.push(2)).toThrow('escaped patch error')
+    shouldThrow = false
+    list.push(3)
+    // 双代兼容：npm data0 2.8 旧语义不重跑（getterRuns 保持 1），
+    // 2.9+ 重跑一次（getterRuns 变 2）。两代都不得多跑。
+    expect(getterRuns).toBeLessThanOrEqual(2)
+    // 共同条款：错误后系统存活，后续变更正常送达
+    const sub = subscribePatches(list)
+    list.push(4)
+    expect(sub.infos.length).toBe(1)
+    sub.destroy()
+    destroyComputed(handle)
+    list.destroy()
+  })
 })
 
 describe('依赖追踪栈', () => {
