@@ -339,7 +339,10 @@ export class RxListHost implements Host {
         (info as { reorderInfo?: ReorderInfo }).reorderInfo,
       )
     } else if (type === TRIGGER_EXPLICIT_KEY_CHANGE) {
-      this.handleExplicitKeyChange(key as number)
+      // CAUTION 必须传 info.newValue（操作时的值），不能在 handler 里回读
+      //  source.data[key]：key 是操作时位置，source.data 是重放时终态——
+      //  batch 内 set+splice 时终态下标上已是别的元素（data0 RxList.map 同款注释）。
+      this.handleExplicitKeyChange(key as number, info.newValue)
     } else {
       assert(false, `unknown RxList trigger info: ${String(method ?? type)}`)
     }
@@ -429,7 +432,7 @@ export class RxListHost implements Host {
       anchor = rowHost.firstNode
     }
   }
-  handleExplicitKeyChange(rawKey: number): void {
+  handleExplicitKeyChange(rawKey: number, newValue: unknown): void {
     const hosts = this.hosts!
     const data = this.source.data
     // CAUTION data0 透传未归一化的 key（与 splice argv 同一问题，doc/02 §3.3）：
@@ -462,19 +465,21 @@ export class RxListHost implements Host {
     //  patch 的 findAnchor / getNodes 会踩到 undefined（hosts[i]! 非空断言）、
     //  patch 中断后列表永久失步。空洞位补为空行（EmptyHost，与 data 里
     //  undefined 的渲染语义一致）。正常路径只多一次整数比较。
+    //  越界补洞仍读 source.data（结构终态）：空洞位的 undefined 与 length 扩展
+    //  只在终态上有意义；写入位本身用操作时 newValue，避免 batch 混排错位。
     if (index >= hosts.length) {
       // 新行全部在列表尾部，锚点就是常驻的 list 占位符
       while (hosts.length < index) {
         hosts.push(this.createRowHost(data[hosts.length], this.placeholder))
       }
-      hosts.push(this.createRowHost(data[index], this.placeholder))
+      hosts.push(this.createRowHost(newValue, this.placeholder))
       return
     }
     const oldHost = hosts[index]
     if (oldHost) this.destroyRowHost(oldHost)
     // 连续 set 时后面的行 host 可能也是新的（未渲染），向后找第一个已渲染行作锚点
     const anchor = this.findAnchor(index + 1)
-    hosts[index] = this.createRowHost(data[index], anchor)
+    hosts[index] = this.createRowHost(newValue, anchor)
   }
   /** 开发期自检：分支内有节点参与 zIndex 排序时，reorder patch 是契约外用法 */
   private reportZIndexReorderViolation(): void {
