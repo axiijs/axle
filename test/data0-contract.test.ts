@@ -73,6 +73,7 @@ describe('RxList triggerInfo 形态（RxListHost.applyTriggerInfo 的输入契�
     list.set(0, 'A')
     expect(sub.infos[0]!.type).toBe('explicit_key_change')
     expect(sub.infos[0]!.key).toBe(0)
+    expect(sub.infos[0]!.newValue).toBe('A')
 
     // CAUTION 负 key 透传（data[-1] = v 的属性赋值，不改变长度）——
     //  RxListHost.handleExplicitKeyChange 必须忽略负 key
