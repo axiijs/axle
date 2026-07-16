@@ -1,6 +1,6 @@
 {
   "name": "@axiijs/axle",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Reactive JSX runtime foundation for data-driven LeaferJS canvas editors.",
   "type": "module",
   "license": "MIT",
