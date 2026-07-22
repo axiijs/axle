@@ -6,7 +6,7 @@ export const AXLE_VERSION = typeof __AXLE_VERSION__ === 'string' ? __AXLE_VERSIO
 export { createRoot } from './render.js'
 export type { Root } from './render.js'
 
-export { Fragment, jsx, jsxs, isAxleNode } from './jsx-runtime.js'
+export { Fragment, jsx, jsxs, createElement, isAxleNode } from './jsx-runtime.js'
 export type { AxleNode, AxleIntrinsicElements } from './jsx-runtime.js'
 
 export type {

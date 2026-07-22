@@ -51,6 +51,30 @@ export function jsx(type: AxleNodeType, props: Props | null, key?: string | numb
 
 export const jsxs = jsx
 
+/**
+ * Classic JSX factory for Vite/esbuild `jsxFactory: 'createElement'` and the
+ * file-level pragma `@jsx createElement`.
+ *
+ * Matches axii's `createElement(type, props, ...children)` contract used by
+ * classic transforms. Automatic runtime must keep using `jsx` / `jsxs` — do not
+ * overload `jsx`'s third argument (that is `key`, not a child).
+ *
+ * Children precedence mirrors axii: explicit varargs win over `props.children`.
+ */
+export function createElement(
+  type: AxleNodeType,
+  props: Props | null | undefined,
+  ...children: AxleChild[]
+): AxleNode {
+  const next: Props = props ? { ...props } : {}
+  if (children.length === 1) {
+    next.children = children[0]
+  } else if (children.length > 1) {
+    next.children = children
+  }
+  return jsx(type, next)
+}
+
 export function isAxleNode(value: unknown): value is AxleNode {
   return (
     typeof value === 'object' &&
