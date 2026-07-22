@@ -8,7 +8,7 @@ export type { CreateRootOptions, Root } from './render.js'
 
 export type { AxleErrorHandler, AxleErrorInfo, AxleErrorSource } from './diagnostics.js'
 
-export { Fragment, jsx, jsxs, isAxleNode } from './jsx-runtime.js'
+export { Fragment, jsx, jsxs, createElement, isAxleNode } from './jsx-runtime.js'
 export type { AxleNode, AxleIntrinsicElements } from './jsx-runtime.js'
 
 export type {

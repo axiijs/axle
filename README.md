@@ -60,6 +60,24 @@ TypeScript 配置（自动 JSX runtime）：
 }
 ```
 
+Classic JSX（与 [axii](https://github.com/axiijs/axii) / Vite `jsxFactory: 'createElement'` 同构）时，
+使用 `createElement`，不要把 classic 变换产物直接喂给 `jsx`（`jsx` 的第三参是 `key`）：
+
+```tsx
+/** @jsx createElement */
+import { createElement, createRoot } from '@axiijs/axle'
+```
+
+```jsonc
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "jsxFactory": "createElement",
+    "jsxFragmentFactory": "Fragment",
+  },
+}
+```
+
 ## 与 React 不同的运行时契约
 
 Axle 使用 JSX 语法，但不是 React renderer：

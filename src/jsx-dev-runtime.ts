@@ -1,7 +1,7 @@
 import { jsx } from './jsx-runtime.js'
 import type { AxleNodeType, Props } from './types.js'
 
-export { Fragment, jsx, jsxs, isAxleNode } from './jsx-runtime.js'
+export { Fragment, jsx, jsxs, createElement, isAxleNode } from './jsx-runtime.js'
 export type { AxleNode, AxleIntrinsicElements, JSX } from './jsx-runtime.js'
 
 /**
