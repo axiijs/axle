@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Axle Table — 十万行表格 POC</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #0f1115;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        padding: 8px 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid #23262d;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0 10px 0 0;
+        font-weight: 600;
+      }
+      header h1 span {
+        color: #7aa2ff;
+      }
+      header a {
+        color: #8a919e;
+        font-size: 12px;
+        text-decoration: none;
+      }
+      header a:hover {
+        color: #7aa2ff;
+      }
+      button,
+      .count-link {
+        background: #1c2027;
+        color: #e6e6e6;
+        border: 1px solid #2c313a;
+        border-radius: 6px;
+        padding: 5px 12px;
+        font-size: 12.5px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button:hover,
+      .count-link:hover {
+        background: #262b34;
+        border-color: #3a4150;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .count-link.active {
+        border-color: #7aa2ff;
+        color: #7aa2ff;
+      }
+      .sep {
+        width: 1px;
+        height: 20px;
+        background: #2c313a;
+      }
+      #search-input {
+        background: #14171d;
+        border: 1px solid #2c313a;
+        border-radius: 6px;
+        color: #e6e6e6;
+        padding: 5px 10px;
+        font-size: 12.5px;
+        width: 180px;
+        outline: none;
+      }
+      #search-input:focus {
+        border-color: #7aa2ff;
+      }
+      #hit-count {
+        font-size: 12.5px;
+        color: #feca57;
+        min-width: 72px;
+        font-variant-numeric: tabular-nums;
+      }
+      .hint {
+        font-size: 12px;
+        color: #8a919e;
+        margin-left: auto;
+      }
+      #stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+      #canvas {
+        position: absolute;
+        inset: 0;
+      }
+      /* DOM overlay 编辑器层（C-14 / D-r4）：容器不吃事件，编辑器自身吃 */
+      #editor-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 5;
+      }
+      #editor-layer > * {
+        pointer-events: auto;
+      }
+      .cell-editor {
+        position: absolute;
+        background: #14171d;
+        border: 1px solid #7aa2ff;
+        border-radius: 4px;
+        font-size: 12px;
+        color: #e6e6e6;
+        outline: none;
+        padding: 0 6px;
+      }
+      input.cell-editor {
+        height: 100%;
+      }
+      select.cell-editor {
+        height: 100%;
+      }
+      .cell-editor-panel {
+        position: absolute;
+        background: #1c2027;
+        border: 1px solid #3a4150;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        min-width: 160px;
+      }
+      .cell-editor-panel label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 2px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .cell-editor-panel label:hover {
+        background: #262b34;
+      }
+      .cell-editor-panel .panel-done {
+        margin-top: 6px;
+        width: 100%;
+      }
+      /* 自绘 DOM 滚动条（D-r9）：全高来自 model */
+      #scrollbar {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 10px;
+        z-index: 6;
+        background: rgba(15, 17, 21, 0.6);
+      }
+      #scroll-thumb {
+        position: absolute;
+        left: 1px;
+        right: 1px;
+        top: 0;
+        height: 40px;
+        background: #3a4150;
+        border-radius: 4px;
+        cursor: grab;
+      }
+      #scroll-thumb:hover {
+        background: #4a5262;
+      }
+      #stats {
+        position: absolute;
+        top: 12px;
+        right: 20px;
+        z-index: 10;
+        background: rgba(15, 17, 21, 0.88);
+        border: 1px solid #2c313a;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 12px;
+        line-height: 1.7;
+        min-width: 240px;
+        pointer-events: none;
+        font-variant-numeric: tabular-nums;
+        white-space: pre;
+      }
+      #stats b {
+        color: #7aa2ff;
+      }
+      #stats .warn {
+        color: #ff6b6b;
+      }
+      #stats .ok {
+        color: #1dd1a1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Axle</span> Table</h1>
+      <span id="count-links"></span>
+      <div class="sep"></div>
+      <input id="search-input" placeholder="关键字查找（Enter）" />
+      <button id="search-prev" title="上一个命中">↑</button>
+      <button id="search-next" title="下一个命中">↓</button>
+      <span id="hit-count"></span>
+      <button id="filter-hits" title="只保留命中行（行数收缩路径）">仅看命中</button>
+      <button id="filter-clear" title="恢复全部行">清除过滤</button>
+      <span class="hint">
+        滚轮滚动 · 点击行选中 · 双击单元格编辑 · 点击表头排序 · 拖动表头调列序 · 拖表头右缘调列宽 ·
+        <a href="./stress.html">← 压测页</a>
+      </span>
+    </header>
+    <div id="stage">
+      <div id="canvas"></div>
+      <div id="editor-layer"></div>
+      <div id="scrollbar"><div id="scroll-thumb"></div></div>
+      <div id="stats">加载中…</div>
+    </div>
+    <script type="module" src="./table.tsx"></script>
+  </body>
+</html>
