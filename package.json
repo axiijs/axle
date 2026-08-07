@@ -1,6 +1,6 @@
 {
   "name": "@axiijs/axle",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "description": "Reactive JSX runtime foundation for data-driven LeaferJS canvas editors.",
   "type": "module",
   "license": "MIT",
@@ -22,16 +22,20 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./jsx-runtime": {
       "types": "./dist/jsx-runtime.d.ts",
-      "import": "./dist/jsx-runtime.js"
+      "import": "./dist/jsx-runtime.js",
+      "default": "./dist/jsx-runtime.js"
     },
     "./jsx-dev-runtime": {
       "types": "./dist/jsx-dev-runtime.d.ts",
-      "import": "./dist/jsx-dev-runtime.js"
-    }
+      "import": "./dist/jsx-dev-runtime.js",
+      "default": "./dist/jsx-dev-runtime.js"
+    },
+    "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -79,5 +83,15 @@
   },
   "overrides": {
     "esbuild": "0.28.1"
+  },
+  "typesVersions": {
+    "*": {
+      "jsx-runtime": [
+        "dist/jsx-runtime.d.ts"
+      ],
+      "jsx-dev-runtime": [
+        "dist/jsx-dev-runtime.d.ts"
+      ]
+    }
   }
 }
