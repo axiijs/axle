@@ -2,7 +2,10 @@
  * Axle 十万行高性能 table 验证页 —— docs/table-100k-poc/table-100k-poc.md 的实施。
  *
  * URL 参数：`?n=100000`（行数，页头有 1 万 / 10 万快捷入口，默认 10 万）、
- * `?rowH=32`（固定行高，C-03）。
+ * `?rowH=`（固定行高，C-03：省略默认 32px；合法整数 16–200px，可解析有限
+ * 十进制先四舍五入再夹取，缺省 / 空白 / 不可解析回退 32px；页头有 32 / 48 / 64
+ * 快捷入口。行数与行高入口互相保留查询参数；挂载后不热更新，更换须以新 URL
+ * 重建页面）。
  *
  * 机制栈裁剪后的表格形态（设计文档 §3 决策记录）：
  * - 视口：复用画布视口（RxViewport + zoomLayer），scale 固定 1（D-r1）；
@@ -26,14 +29,9 @@ import type { IUI, PointerEvent as LeaferPointerEvent } from 'leafer-ui'
 import { ResizeEvent } from 'leafer-ui'
 import { atom, autorun } from 'data0'
 import type { Atom } from 'data0'
-import {
-  createDotLayer,
-  createRoot,
-  rxWindowedList,
-  RxViewport,
-  SpatialIndex,
-} from '@axiijs/axle'
+import { createDotLayer, createRoot, rxWindowedList, RxViewport, SpatialIndex } from '@axiijs/axle'
 import type { AxleNode, IndexBounds } from '@axiijs/axle'
+import { parseTableRowH, tablePageHref } from './tableRowHeight'
 
 // ---------------------------------------------------------------------------
 // 参数与常量
@@ -41,7 +39,8 @@ import type { AxleNode, IndexBounds } from '@axiijs/axle'
 
 const params = new URLSearchParams(location.search)
 const ROW_COUNT = Math.max(1, Math.min(1_000_000, Number(params.get('n')) || 100_000))
-const ROW_H = Math.max(16, Math.min(200, Number(params.get('rowH')) || 32))
+const ROW_H = parseTableRowH(params)
+const ROW_H_PARAM = params.get('rowH')
 const HEADER_H = 36
 const MIN_COL_W = 48
 
@@ -174,11 +173,11 @@ const COLUMNS: ColumnDef[] = [
     width: 160,
     options: TAGS,
     text: (r) => r.tags.map((t) => `#${t}`).join(' '),
-    sortKey: (r) =>
-      r.tags.map((t) => TAGS.indexOf(t as (typeof TAGS)[number])).join(','),
+    sortKey: (r) => r.tags.map((t) => TAGS.indexOf(t as (typeof TAGS)[number])).join(','),
     readRaw: (r) => [...r.tags],
     write: (r, v) => {
-      if (Array.isArray(v)) r.tags = v.map(String).filter((t) => (TAGS as readonly string[]).includes(t))
+      if (Array.isArray(v))
+        r.tags = v.map(String).filter((t) => (TAGS as readonly string[]).includes(t))
     },
   },
   {
@@ -223,7 +222,16 @@ const rows: RowData[] = []
 let buildMs = 0
 
 function buildSearchText(row: RowData): string {
-  return [row.name, row.owner, row.city, row.status, row.tags.join(' '), row.note, row.score, row.price]
+  return [
+    row.name,
+    row.owner,
+    row.city,
+    row.status,
+    row.tags.join(' '),
+    row.note,
+    row.score,
+    row.price,
+  ]
     .join(' ')
     .toLowerCase()
 }
@@ -811,7 +819,9 @@ const multiEditor: EditorFactory = ({ row, col, commit, cancel }) => {
   done.className = 'panel-done'
   done.textContent = '完成'
   done.addEventListener('click', () => {
-    const values = [...panel.querySelectorAll<HTMLInputElement>('input:checked')].map((i) => i.value)
+    const values = [...panel.querySelectorAll<HTMLInputElement>('input:checked')].map(
+      (i) => i.value,
+    )
     commit(values)
   })
   panel.appendChild(done)
@@ -1285,12 +1295,7 @@ function headerNode(): AxleNode {
     // 表头层不可 hittable={false}：E-05 的 worldHittable 沿父链过滤，
     // 会连带屏蔽列拖动 / 列宽手柄的命中（B-01 同款事故）。
     <group y={() => -(rxViewport.value()?.y ?? 0)}>
-      <rect
-        width={() => colLayout().total}
-        height={HEADER_H}
-        fill="#1c2027"
-        hittable={false}
-      />
+      <rect width={() => colLayout().total} height={HEADER_H} fill="#1c2027" hittable={false} />
       <rect
         y={HEADER_H - 1}
         width={() => colLayout().total}
@@ -1395,7 +1400,9 @@ on('filter-clear', clearFilter)
 const hitCountEl = document.getElementById('hit-count')!
 autorun(() => {
   const h = hitsAtom()
-  hitCountEl.textContent = h ? `命中 ${h.rowIds.length}${h.index >= 0 ? ` · ${h.index + 1}` : ''}` : ''
+  hitCountEl.textContent = h
+    ? `命中 ${h.rowIds.length}${h.index >= 0 ? ` · ${h.index + 1}` : ''}`
+    : ''
 }, true)
 
 {
@@ -1403,8 +1410,20 @@ autorun(() => {
   for (const n of [10_000, 100_000]) {
     const link = document.createElement('a')
     link.className = 'count-link' + (n === ROW_COUNT ? ' active' : '')
-    link.href = `?n=${n}`
+    link.href = tablePageHref(ROW_COUNT, ROW_H_PARAM, { n })
     link.textContent = `${n / 10000} 万行`
+    container.appendChild(link)
+  }
+}
+
+{
+  const container = document.getElementById('rowh-links')!
+  for (const h of [32, 48, 64] as const) {
+    const link = document.createElement('a')
+    link.className = 'count-link' + (h === ROW_H ? ' active' : '')
+    link.href = tablePageHref(ROW_COUNT, ROW_H_PARAM, { rowH: String(h) })
+    link.dataset.rowh = String(h)
+    link.textContent = `${h}px`
     container.appendChild(link)
   }
 }
@@ -1469,7 +1488,9 @@ setInterval(() => {
   const p95 = percentile(frameDurations, 0.95)
   const max = frameDurations.length ? Math.max(...frameDurations) : 0
   const fps = frameDurations.length
-    ? Math.round(1000 / (frameDurations.reduce((sum, value) => sum + value, 0) / frameDurations.length))
+    ? Math.round(
+        1000 / (frameDurations.reduce((sum, value) => sum + value, 0) / frameDurations.length),
+      )
     : 0
   const nodes = countNodes(leafer as unknown as IUI)
   const heap = heapMB()
@@ -1506,10 +1527,12 @@ function viewSlotRange(): [number, number] {
   const v = rxViewport.value()
   const top = Math.max(0, -(v?.y ?? 0))
   const viewH = leafer.height ?? 800
-  return [
-    Math.floor(top / ROW_H),
-    Math.min(slotCount - 1, Math.ceil((top + viewH) / ROW_H) - 1),
-  ]
+  return [Math.floor(top / ROW_H), Math.min(slotCount - 1, Math.ceil((top + viewH) / ROW_H) - 1)]
+}
+
+function slotYH(slot: number): { y: number; height: number } | null {
+  const b = slotIndex.get(slot)
+  return b ? { y: b.y, height: b.height } : null
 }
 
 function mountedSlotRange(): [number, number] | null {
@@ -1543,6 +1566,11 @@ Object.assign(globalThis as Record<string, unknown>, {
     slots: slotCount,
     orderLength: orderAtom.raw.length,
     rowH: ROW_H,
+    rowHParam: ROW_H_PARAM,
+    slot0: slotYH(0),
+    slot1: slotYH(1),
+    contentHeight: orderAtom.raw.length * ROW_H,
+    dotLayerHeight: (dotLayer.ui.height as number) ?? null,
     viewH: leafer.height ?? 0,
     mounted: windowed.rows.data.length,
     mountedSlotRange: mountedSlotRange(),
@@ -1559,7 +1587,10 @@ Object.assign(globalThis as Record<string, unknown>, {
     colWidths: { ...colWidthsAtom.raw },
     // resize 跟随断言（D-09）：视口宽 / 槽位索引 bounds 宽（首末槽位）/ 底衬层宽 / 表宽
     viewW: viewWAtom.raw,
-    slotBoundsWidths: [slotIndex.get(0)?.width ?? null, slotIndex.get(slotCount - 1)?.width ?? null],
+    slotBoundsWidths: [
+      slotIndex.get(0)?.width ?? null,
+      slotIndex.get(slotCount - 1)?.width ?? null,
+    ],
     dotLayerWidth: (dotLayer.ui.width as number) ?? null,
     tableWidth: colLayout.raw.total,
     // 列拖动视觉反馈断言（C-15）：拖拽态 + 插入指示线
@@ -1596,13 +1627,24 @@ Object.assign(globalThis as Record<string, unknown>, {
     getCellValue: (rowId: number, colId: string) => colById(colId).readRaw(rows[rowId - 1]!),
     getCellDisplay: (slot: number, colId: string) => {
       const node = cellTextNodes.get(`${slot}:${colId}`) as unknown as
-        | { text?: unknown; url?: unknown }
-        | undefined
+        { text?: unknown; url?: unknown } | undefined
       return node?.text ?? node?.url ?? null
     },
     cellClientRect: (slot: number, colId: string) => {
       const layout = colLayout.raw
       return pageRectToClient(layout.x[colId] ?? 0, slot * ROW_H, layout.w[colId] ?? 0, ROW_H)
+    },
+    /** 挂载行节点实际几何（场景图，不是 debug.rowH 回声），拦「只改 debug、JSX 仍写死 32」。
+     *  复用已有 cellTextNodes（getCellDisplay 的 ref），不给窗口化行再挂一层 ref。 */
+    mountedGeometry: (slot: number) => {
+      const nameCell = cellTextNodes.get(`${slot}:name`)
+      const parent = nameCell?.parent as IUI | undefined
+      const hit = parent?.children?.[0] as IUI | undefined
+      return {
+        rowY: parent != null ? Number(parent.y) : null,
+        hitHeight: hit != null ? Number(hit.height) : null,
+        cellHeight: nameCell != null ? Number(nameCell.height) : null,
+      }
     },
     headerCellClientRect: (colId: string) => {
       const layout = colLayout.raw

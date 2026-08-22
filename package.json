@@ -53,7 +53,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "smoke:table": "node scripts/table-smoke.mjs"
+    "smoke:table": "node scripts/table-smoke.mjs",
+    "smoke:table:rowh": "node scripts/table-rowh-smoke.mjs"
   },
   "peerDependencies": {
     "data0": "~2.16.0",

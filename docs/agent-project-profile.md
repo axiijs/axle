@@ -34,7 +34,7 @@ data0 响应式数据（`atom` / `RxList` / function）精确绑定到 Leafer �
 - 提交前 `npm run check` 必须全绿（typecheck + lint + test + build）。
 - 默认不主动 git commit；用户明确要求时才提交。
 - 演示 / 验证型应用放在 `playground/` 下（vite 多页面：`index.html` / `canvas.html` /
-  `stress.html`，各配一个 `.tsx` 入口，直接引用 `src/`，改运行时代码即时生效）。
+  `stress.html` / `table.html`，各配一个 `.tsx` 入口，直接引用 `src/`，改运行时代码即时生效）。
 
 ## 功能目标
 
@@ -89,11 +89,13 @@ data0 响应式数据（`atom` / `RxList` / function）精确绑定到 Leafer �
   - `types.ts` / `util.ts` / `index.ts`。
 - `playground/` — 应用层配方与验证场：`main.tsx`（基础示例）、`canvas.tsx`
   （节点画布 POC）、`stress.tsx`（万级卡片压测页，doc/05 的完整实施参考——
-  **新的大规模应用验证应参照其配方**：LOD 卡片形态、媒体门控、指标面板）。
+  **新的大规模应用验证应参照其配方**：LOD 卡片形态、媒体门控、指标面板）、
+  `table.tsx`（十万行表格验证页，`docs/table-100k-poc/` 的实施）。
 - `test/` — vitest 测试；错误路径、fuzz 不变量（`fuzz-invariants.test.tsx`）、
   zIndex 兼容（`zindex-compat.test.tsx`）、data0 契约（`data0-contract.test.ts`）
   等均有专门文件。
 - `scripts/` — `stress-smoke.mjs`（headless Chrome 压测页 e2e 冒烟）、
+  `table-smoke.mjs`（十万行表格页 e2e 冒烟，`npm run smoke:table`）、
   `chrome-path.mjs`。
 - `doc/` — 契约正式出处；`dist/` — 构建产物，勿手改。
 - 不要把应用层策略（档位划分、卡片/行形态、媒体策略）写进 `src/`；
@@ -136,13 +138,13 @@ data0 响应式数据（`atom` / `RxList` / function）精确绑定到 Leafer �
 
 ## 调研索引
 
-| 字段 | 内容 |
-|---|---|
-| 权威规范 | `AGENTS.md`；`doc/01-overview.md`…`doc/05-large-scale-performance.md`（大规模渲染任务必读 doc/05 与 doc/02） |
-| 源码入口 | Host 树：`src/Host.ts`（头注释）、`src/createHost.ts`、`src/RxListHost.ts`、`src/ComponentHost.ts`、`src/render.ts`；大规模机制：`src/spatialIndex.ts`、`src/rxWindowedList.ts`、`src/rxLodLevel.ts`、`src/dotLayer.ts`、`src/reactiveLeaferState.ts`、`src/enginePosition.ts`、`src/sharedTicker.ts`；应用配方：`playground/stress.tsx`（万级卡片全套配方）、`playground/canvas.tsx`；引擎桥接：`src/leafer.ts` |
-| 测试与门禁 | 默认全量：`npm run check`；仅测试：`npx vitest run`；覆盖率：`npx vitest run --coverage`；压测冒烟：`npm run smoke:stress`（先起 `npm run playground -- --port 5199`）；契约测试参考：`test/rx-windowed-list.test.ts`、`test/spatial-index.test.ts`、`test/zindex-compat.test.tsx`、`test/fuzz-invariants.test.tsx` |
-| 历史参考 | `doc/05` 的「实施进度 / 热路径常数收敛 / 修订记录」章节（设计循环收敛的先例）；`playground/stress.tsx` 内注释（LOD / 媒体策略配方）；本仓库尚无 `prompt/` 历史任务 |
-| 冲突处理 | 需求与 doc/ 既定原则冲突时，Task 要求中显式写「本任务修订 doc/0X §Y …」，并把同步修改 doc/ 列为交付项；禁止方案默默偏离 |
+| 字段       | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 权威规范   | `AGENTS.md`；`doc/01-overview.md`…`doc/05-large-scale-performance.md`（大规模渲染任务必读 doc/05 与 doc/02）                                                                                                                                                                                                                                                                                                                                           |
+| 源码入口   | Host 树：`src/Host.ts`（头注释）、`src/createHost.ts`、`src/RxListHost.ts`、`src/ComponentHost.ts`、`src/render.ts`；大规模机制：`src/spatialIndex.ts`、`src/rxWindowedList.ts`、`src/rxLodLevel.ts`、`src/dotLayer.ts`、`src/reactiveLeaferState.ts`、`src/enginePosition.ts`、`src/sharedTicker.ts`；应用配方：`playground/stress.tsx`（万级卡片全套配方）、`playground/canvas.tsx`、`playground/table.tsx`（十万行表格）；引擎桥接：`src/leafer.ts` |
+| 测试与门禁 | 默认全量：`npm run check`；仅测试：`npx vitest run`；覆盖率：`npx vitest run --coverage`；压测冒烟：`npm run smoke:stress`（先起 `npm run playground -- --port 5199`）；表格冒烟：`npm run smoke:table`（同上，打开 `/table.html`）；契约测试参考：`test/rx-windowed-list.test.ts`、`test/spatial-index.test.ts`、`test/zindex-compat.test.tsx`、`test/fuzz-invariants.test.tsx`                                                                       |
+| 历史参考   | `doc/05` 的「实施进度 / 热路径常数收敛 / 修订记录」章节（设计循环收敛的先例）；`playground/stress.tsx` 内注释（LOD / 媒体策略配方）；`docs/table-100k-poc/` 是已完成的十万行表格 playground 验证运行（旧循环任务归档只供人工复盘，不得把其设计结论复制为新任务方案）                                                                                                                                                                                   |
+| 冲突处理   | 需求与 doc/ 既定原则冲突时，Task 要求中显式写「本任务修订 doc/0X §Y …」，并把同步修改 doc/ 列为交付项；禁止方案默默偏离                                                                                                                                                                                                                                                                                                                                |
 
 ## 完成纪律种子
 
@@ -169,4 +171,8 @@ data0 响应式数据（`atom` / `RxList` / function）精确绑定到 Leafer �
    建议执行策略：按关联声明触发。
 6. **契约变更**：`doc/` 对应章节同步修改，代码注释写明性能 / 时序论证。
    无效证据：只改代码不改 doc/；把取舍只写在任务说明或 PR 描述里。
+   建议执行策略：按关联声明触发。
+7. **表格验证页变更**（`playground/table.tsx` / `playground/table.html` / `scripts/table-smoke.mjs`）：
+   `npm run smoke:table` 通过（需 playground 起在 5199 端口 + 系统 Chrome）。
+   无效证据：只打开页面目视确认、无 `__tableDebug` / 冒烟断言。
    建议执行策略：按关联声明触发。

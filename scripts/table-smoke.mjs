@@ -25,9 +25,12 @@
  */
 import { chromium } from 'playwright-core'
 import { resolveChromePath } from './chrome-path.mjs'
+import { assertRowHGeometry, parseTableRowH } from './table-row-h.mjs'
 
 const url = process.env.TABLE_URL ?? 'http://localhost:5199/table.html?n=100000'
-const EXPECTED_ROWS = Number(new URL(url).searchParams.get('n')) || 100_000
+const opened = new URL(url)
+const EXPECTED_ROWS = Number(opened.searchParams.get('n')) || 100_000
+const EXPECTED_ROW_H = parseTableRowH(opened.searchParams)
 
 const browser = await chromium.launch({
   executablePath: resolveChromePath(),
@@ -48,10 +51,7 @@ page.on('console', (message) => {
 
 const debug = () => page.evaluate(() => globalThis.__tableDebug())
 const act = (fn, ...args) =>
-  page.evaluate(
-    ([name, rest]) => globalThis.__tableActions[name](...rest),
-    [fn, args],
-  )
+  page.evaluate(([name, rest]) => globalThis.__tableActions[name](...rest), [fn, args])
 const settle = (ms = 800) => page.waitForTimeout(ms)
 /** 等窗口化队列排空 + 一帧渲染 */
 const settleQueue = async () => {
@@ -89,6 +89,17 @@ await settle(1500)
   console.log('[smoke] initial:', JSON.stringify(d))
   assert(d.rows === EXPECTED_ROWS, `expected ${EXPECTED_ROWS} rows, got ${d.rows}`)
   assert(d.slots === EXPECTED_ROWS, `expected ${EXPECTED_ROWS} slots, got ${d.slots}`)
+  assertRowHGeometry(d, EXPECTED_ROW_H, assert)
+  assert(
+    d.rowHParam === opened.searchParams.get('rowH'),
+    `rowHParam ${JSON.stringify(d.rowHParam)} !== URL`,
+  )
+  if (d.orderLength > 0) {
+    assert(
+      d.dotLayerHeight === d.contentHeight,
+      `非空表 dotLayerHeight ${d.dotLayerHeight} !== contentHeight ${d.contentHeight}`,
+    )
+  }
   assert(d.mounted > 0, '初始应有挂载行')
   assert(d.nodes < 5000, `node budget exceeded: ${d.nodes}`)
   assert(d.ttiMs > 0 && d.ttiMs <= 1500, `TTI 超预算（C-10 ≤ 1500ms）: ${d.ttiMs}ms`)
@@ -193,7 +204,9 @@ await settle(1500)
       )
       assertMountedCoversView(after, `排序（${label}）`)
     }
-    console.log(`[smoke] sort ${colId} asc+desc OK (lastSortMs=${(await debug()).lastSortMs.toFixed(0)})`)
+    console.log(
+      `[smoke] sort ${colId} asc+desc OK (lastSortMs=${(await debug()).lastSortMs.toFixed(0)})`,
+    )
   }
 }
 
@@ -225,9 +238,15 @@ await settle(1500)
   await act('search', '林')
   await settle(400)
   let d = await debug()
-  console.log('[smoke] search:', JSON.stringify({ hitCount: d.hitCount, lastSearchMs: d.lastSearchMs }))
+  console.log(
+    '[smoke] search:',
+    JSON.stringify({ hitCount: d.hitCount, lastSearchMs: d.lastSearchMs }),
+  )
   assert(d.hitCount > 0, '查找应有命中')
-  assert(d.lastSearchMs > 0 && d.lastSearchMs <= 500, `查找耗时超预算（C-08 ≤ 500ms）: ${d.lastSearchMs}ms`)
+  assert(
+    d.lastSearchMs > 0 && d.lastSearchMs <= 500,
+    `查找耗时超预算（C-08 ≤ 500ms）: ${d.lastSearchMs}ms`,
+  )
 
   // 逐个跳转（命中遍布全表，必然含屏外命中）
   await act('scrollTo', 0)
@@ -237,7 +256,10 @@ await settle(1500)
   d = await debug()
   const hitSlot = await act('slotOf', d.currentHit)
   assert(d.hitIndex === 0, `jumpNext 后应定位第 1 个命中: index=${d.hitIndex}`)
-  assert(d.lastJumpMs > 0 && d.lastJumpMs <= 300, `跳转耗时超预算（C-08 ≤ 300ms）: ${d.lastJumpMs}ms`)
+  assert(
+    d.lastJumpMs > 0 && d.lastJumpMs <= 300,
+    `跳转耗时超预算（C-08 ≤ 300ms）: ${d.lastJumpMs}ms`,
+  )
   // 当前命中槽位必须落入视口区间（内容已呈现）
   assert(hitSlot !== undefined, '命中行必须有槽位')
   assert(
@@ -271,7 +293,10 @@ await settle(1500)
   await act('search', '林之遥')
   await settle(400)
   const searched = await debug()
-  assert(searched.hitCount > 0 && searched.hitCount < 100_000, `过滤前置命中数异常: ${searched.hitCount}`)
+  assert(
+    searched.hitCount > 0 && searched.hitCount < 100_000,
+    `过滤前置命中数异常: ${searched.hitCount}`,
+  )
   const statsBefore = (d) => d.stats.mounts + d.stats.unmounts + d.stats.replaces
   const beforeFilter = await debug()
   await act('applyFilter')
@@ -283,16 +308,19 @@ await settle(1500)
     filterDelta <= 4 * d.mounted,
     `过滤收缩引发的结构操作越界（D-07）: 增量 ${filterDelta} > 4 × ${d.mounted}`,
   )
-  console.log('[smoke] filter at deep scroll:', JSON.stringify({
-    orderLength: d.orderLength, slots: d.slots, viewport: d.viewport,
-    mountedSlotRange: d.mountedSlotRange, viewSlotRange: d.viewSlotRange,
-  }))
+  console.log(
+    '[smoke] filter at deep scroll:',
+    JSON.stringify({
+      orderLength: d.orderLength,
+      slots: d.slots,
+      viewport: d.viewport,
+      mountedSlotRange: d.mountedSlotRange,
+      viewSlotRange: d.viewSlotRange,
+    }),
+  )
   assert(d.orderLength === searched.hitCount, `过滤后行数应等于命中数: ${d.orderLength}`)
   assert(d.slots === searched.hitCount, `过滤后槽位数应收缩: ${d.slots}`)
-  assert(
-    searched.hitCount < EXPECTED_ROWS,
-    `过滤场景需要命中数为非全集: ${searched.hitCount}`,
-  )
+  assert(searched.hitCount < EXPECTED_ROWS, `过滤场景需要命中数为非全集: ${searched.hitCount}`)
   const maxTop = Math.max(0, d.orderLength * d.rowH - d.viewH)
   assert(-d.viewport.y <= maxTop + 1, `过滤收缩后视口未钳制（C-26）: y=${d.viewport.y}`)
   assertMountedCoversView(d, '过滤收缩后')
@@ -347,7 +375,9 @@ await settle(1500)
   assert((await act('getCellValue', rowId, 'score')) === 55, '数值编辑器写回失败')
   // 下拉
   await act('openEditor', 2, 'city')
-  const citySelect = await page.waitForSelector('#editor-layer select.cell-editor', { timeout: 5000 })
+  const citySelect = await page.waitForSelector('#editor-layer select.cell-editor', {
+    timeout: 5000,
+  })
   await citySelect.selectOption('上海')
   await settle(200)
   assert((await act('getCellValue', rowId, 'city')) === '上海', '下拉编辑器写回失败')
@@ -378,7 +408,9 @@ await settle(1500)
   )
   // 图片（预置选项集）
   await act('openEditor', 2, 'thumb')
-  const thumbSelect = await page.waitForSelector('#editor-layer select.cell-editor', { timeout: 5000 })
+  const thumbSelect = await page.waitForSelector('#editor-layer select.cell-editor', {
+    timeout: 5000,
+  })
   await thumbSelect.selectOption('3')
   await settle(200)
   assert((await act('getCellValue', rowId, 'thumb')) === 3, '图片编辑器写回失败')
@@ -426,14 +458,19 @@ await settle(1500)
   await act('startFrameSampling')
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2)
   await page.mouse.down()
-  await page.mouse.move(handle.x + handle.width / 2 + 60, handle.y + handle.height / 2, { steps: 10 })
+  await page.mouse.move(handle.x + handle.width / 2 + 60, handle.y + handle.height / 2, {
+    steps: 10,
+  })
   await page.mouse.up()
   await settle(200)
   const resizeFrames = await act('stopFrameSampling')
   await settle(300)
   const widthsAfter = (await debug()).colWidths
   const sumAfter = Object.values(widthsAfter).reduce((s, w) => s + w, 0)
-  assert(widthsAfter.name > widthsBefore.name + 5, `列宽调整未生效: ${widthsBefore.name} → ${widthsAfter.name}`)
+  assert(
+    widthsAfter.name > widthsBefore.name + 5,
+    `列宽调整未生效: ${widthsBefore.name} → ${widthsAfter.name}`,
+  )
   assert(
     Math.abs(sumAfter - sumBefore) < 0.01,
     `列宽调整必须总宽守恒（C-22）: ${sumBefore} → ${sumAfter}`,
@@ -476,12 +513,26 @@ await settle(1500)
   await waitResizeConverged(baseW, null)
   await settleQueue()
   let d = await debug()
-  console.log('[smoke] resize widen:', JSON.stringify({
-    viewW: d.viewW, slotBoundsWidths: d.slotBoundsWidths, dotLayerWidth: d.dotLayerWidth,
-  }))
-  assert(d.slotBoundsWidths.every((w) => w === d.viewW), `变宽后槽位索引 bounds 宽必须跟随（C-04）: ${d.slotBoundsWidths} vs ${d.viewW}`)
-  assert(d.dotLayerWidth === d.viewW, `变宽后底衬层宽必须跟随（C-09）: ${d.dotLayerWidth} vs ${d.viewW}`)
-  assert(d.tableWidth === d.viewW, `变宽后表宽必须恒等于视口宽（C-22）: ${d.tableWidth} vs ${d.viewW}`)
+  console.log(
+    '[smoke] resize widen:',
+    JSON.stringify({
+      viewW: d.viewW,
+      slotBoundsWidths: d.slotBoundsWidths,
+      dotLayerWidth: d.dotLayerWidth,
+    }),
+  )
+  assert(
+    d.slotBoundsWidths.every((w) => w === d.viewW),
+    `变宽后槽位索引 bounds 宽必须跟随（C-04）: ${d.slotBoundsWidths} vs ${d.viewW}`,
+  )
+  assert(
+    d.dotLayerWidth === d.viewW,
+    `变宽后底衬层宽必须跟随（C-09）: ${d.dotLayerWidth} vs ${d.viewW}`,
+  )
+  assert(
+    d.tableWidth === d.viewW,
+    `变宽后表宽必须恒等于视口宽（C-22）: ${d.tableWidth} vs ${d.viewW}`,
+  )
   assert(d.viewport.x === 0, `变宽后横向偏移必须为零（C-22）: x=${d.viewport.x}`)
   assertMountedCoversView(d, '变宽后')
 
@@ -490,12 +541,26 @@ await settle(1500)
   await waitResizeConverged(null, baseW)
   await settleQueue()
   d = await debug()
-  console.log('[smoke] resize narrow:', JSON.stringify({
-    viewW: d.viewW, slotBoundsWidths: d.slotBoundsWidths, dotLayerWidth: d.dotLayerWidth,
-  }))
-  assert(d.slotBoundsWidths.every((w) => w === d.viewW), `变窄后槽位索引 bounds 宽必须跟随（C-04）: ${d.slotBoundsWidths} vs ${d.viewW}`)
-  assert(d.dotLayerWidth === d.viewW, `变窄后底衬层宽必须跟随（C-09）: ${d.dotLayerWidth} vs ${d.viewW}`)
-  assert(d.tableWidth === d.viewW, `变窄后表宽必须恒等于视口宽（C-22）: ${d.tableWidth} vs ${d.viewW}`)
+  console.log(
+    '[smoke] resize narrow:',
+    JSON.stringify({
+      viewW: d.viewW,
+      slotBoundsWidths: d.slotBoundsWidths,
+      dotLayerWidth: d.dotLayerWidth,
+    }),
+  )
+  assert(
+    d.slotBoundsWidths.every((w) => w === d.viewW),
+    `变窄后槽位索引 bounds 宽必须跟随（C-04）: ${d.slotBoundsWidths} vs ${d.viewW}`,
+  )
+  assert(
+    d.dotLayerWidth === d.viewW,
+    `变窄后底衬层宽必须跟随（C-09）: ${d.dotLayerWidth} vs ${d.viewW}`,
+  )
+  assert(
+    d.tableWidth === d.viewW,
+    `变窄后表宽必须恒等于视口宽（C-22）: ${d.tableWidth} vs ${d.viewW}`,
+  )
   assert(d.viewport.x === 0, `变窄后横向偏移必须为零（C-22）: x=${d.viewport.x}`)
   assertMountedCoversView(d, '变窄后')
   await page.mouse.move(500, 450)
